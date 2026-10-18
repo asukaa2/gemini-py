@@ -9,21 +9,24 @@ Public API:
     GeminiConfig        — model / generation configuration
     SessionStore        — persistent conversation sessions
     run_headless        — one-shot headless helper that mirrors `gemini -p`
+    login / logout      — persistent credentials API
 
 Example:
-    from gemini_py import GeminiClient, AuthConfig
-    client = GeminiClient(AuthConfig.from_env())
-    print(client.generate_text("Explain what 2 + 2 equals."))
+    from gemini_py import login, GeminiClient
+    login("AIza...")            # persists to ~/.gemini-py/.env
+    client = GeminiClient()     # auto-picks up the saved key
+    print(client.generate_text("Hello!").text)
 """
 
 from .auth import AuthConfig, AuthMethod
 from .client import GeminiClient
 from .config import GeminiConfig, ModelAlias
+from .login import login, logout, whoami, LoginResult, LoginError
 from .models import GenerateResult, Message, MessageRole, UsageStats
 from .sessions import SessionStore, SessionRecord
 from .output import OutputFormat, format_result
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "GeminiClient",
     "AuthConfig",
@@ -39,6 +42,11 @@ __all__ = [
     "OutputFormat",
     "format_result",
     "run_headless",
+    "login",
+    "logout",
+    "whoami",
+    "LoginResult",
+    "LoginError",
 ]
 
 from .client import run_headless

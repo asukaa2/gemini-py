@@ -32,10 +32,58 @@ Same environment variables as the official CLI:
 | Vertex AI with SA key      | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, ... |
 | Google Cloud API key       | `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`                      |
 
-`.env` files are auto-loaded from (in order):
-1. `./.env`
-2. `./.gemini/.env`
-3. `~/.gemini/.env`
+### One-call `login()` API (v0.3+)
+
+Instead of manually exporting env vars, you can authenticate once and have
+the credentials auto-loaded by every future `GeminiClient()` call:
+
+```python
+from gemini_py import login, logout, whoami, GeminiClient
+
+login("AIza...")            # writes GEMINI_API_KEY to ~/.gemini-py/.env
+                            # (also sets it in the current process)
+
+client = GeminiClient()     # auto-picks up the saved key
+print(client.generate_text("Hello!").text)
+
+print(whoami())
+# {'method': 'gemini_api_key', 'api_key': 'AIza****...abcd', 'project': None, ...}
+
+logout()                    # removes the persisted credentials
+```
+
+For Vertex AI:
+
+```python
+login(
+    "ya29.abc...",
+    method="google",
+    project="my-gcp-project",
+    location="us-central1",
+)
+```
+
+CLI equivalents:
+
+```bash
+gemini-py login --api-key AIza...           # non-interactive
+gemini-py login                              # interactive (hidden prompt)
+gemini-py login --method google --project my-proj --api-key ya29.abc...
+gemini-py whoami                             # show masked credentials
+gemini-py logout                             # clear credentials
+```
+
+Credentials are persisted to `~/.gemini-py/.env` (scope=user) or
+`./.gemini/.env` (scope=project). Files are chmod'd to 0600 when possible.
+The `.env` files are loaded general→specific (so a project `.env` overrides
+the user's saved credentials).
+
+`.env` files are auto-loaded from (in order, later overrides earlier):
+
+1. `~/.gemini-py/.env`     ← where `login()` writes by default
+2. `~/.gemini/.env`         ← gemini-cli convention
+3. `./.gemini/.env`         ← project-scoped
+4. `./.env`                 ← project root (most specific)
 
 ## CLI usage
 
@@ -67,6 +115,11 @@ gemini-py -p "List files" --yolo
 # List / delete sessions
 gemini-py sessions list
 gemini-py sessions delete 0
+
+# Authenticate once, use everywhere
+gemini-py login --api-key AIza...
+gemini-py whoami
+gemini-py logout
 ```
 
 ### Full flag reference

@@ -140,16 +140,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _build_subcommand_parser() -> argparse.ArgumentParser:
-    """A parser that only handles the subcommands (sessions/extensions/mcp/skills)."""
+    """A parser that only handles the subcommands (sessions/extensions/mcp/skills/login/logout/whoami)."""
     parser = argparse.ArgumentParser(
         prog="gemini-py",
-        description="Subcommands for sessions/extensions/mcp/skills management.",
+        description="Subcommands for sessions/extensions/mcp/skills/login management.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     _add_sessions_subparser(subparsers)
     _add_extensions_subparser(subparsers)
     _add_mcp_subparser(subparsers)
     _add_skills_subparser(subparsers)
+    _add_login_subparser(subparsers)
+    _add_logout_subparser(subparsers)
+    _add_whoami_subparser(subparsers)
     return parser
 
 
@@ -211,6 +214,32 @@ def _add_skills_subparser(subparsers) -> None:
     sub.add_parser("disable-all", help="Disable all discovered skills.")
 
 
+def _add_login_subparser(subparsers) -> None:
+    p = subparsers.add_parser("login", help="Authenticate and persist credentials.")
+    p.add_argument(
+        "--api-key",
+        help="API key. If omitted, read interactively from a hidden prompt.",
+    )
+    p.add_argument(
+        "--method",
+        choices=["gemini", "google"],
+        default="gemini",
+        help="Auth method (default: gemini). 'google' = Vertex AI API key.",
+    )
+    p.add_argument("--project", help="Google Cloud project ID (required for --method=google).")
+    p.add_argument("--location", default="us-central1", help="Vertex AI region (default: us-central1).")
+    p.add_argument("--scope", choices=["user", "project"], default="user", help="Where to persist (default: user).")
+
+
+def _add_logout_subparser(subparsers) -> None:
+    p = subparsers.add_parser("logout", help="Clear persisted credentials.")
+    p.add_argument("--scope", choices=["user", "project"], default="user", help="Which file to clear (default: user).")
+
+
+def _add_whoami_subparser(subparsers) -> None:
+    subparsers.add_parser("whoami", help="Show currently-active credentials (masked).")
+
+
 # --- Main entry -------------------------------------------------------------
 
 
@@ -220,7 +249,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Detect subcommands BEFORE argparse, so that the positional `query`
     # argument doesn't swallow them when no -p is given.
-    SUBCOMMANDS = {"sessions", "extensions", "mcp", "skills"}
+    SUBCOMMANDS = {"sessions", "extensions", "mcp", "skills", "login", "logout", "whoami"}
     if raw_argv and raw_argv[0] in SUBCOMMANDS:
         # Build a parser that only knows about subcommands + their options.
         parser = _build_subcommand_parser()
@@ -233,6 +262,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _cmd_mcp(args)
         if args.command == "skills":
             return _cmd_skills(args)
+        if args.command == "login":
+            return _cmd_login(args)
+        if args.command == "logout":
+            return _cmd_logout(args)
+        if args.command == "whoami":
+            return _cmd_whoami(args)
         return 1
 
     parser = build_parser()
@@ -607,6 +642,86 @@ def _cmd_skills(args) -> int:
 
 def _looks_like_url(s: str) -> bool:
     return s.startswith(("http://", "https://"))
+
+
+# --- login / logout / whoami -----------------------------------------------
+
+
+def _cmd_login(args) -> int:
+    """Handle `gemini-py login`."""
+    from .login import login as _login, LoginError
+
+    api_key = args.api_key
+    if not api_key:
+        # Read interactively from stdin (hidden if getpass is available).
+        if sys.stdin.isatty():
+            try:
+                import getpass
+                api_key = getpass.getpass("Enter your API key (input hidden): ")
+            except Exception:
+                api_key = input("Enter your API key: ").strip()
+        else:
+            # Non-interactive: read first line of stdin.
+            try:
+                api_key = sys.stdin.readline().strip()
+            except Exception:
+                api_key = ""
+        if not api_key:
+            print("Error: no API key provided.", file=sys.stderr)
+            return 1
+
+    try:
+        result = _login(
+            api_key,
+            method=args.method,
+            project=args.project,
+            location=args.location,
+            scope=args.scope,
+        )
+    except LoginError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    print(result.describe())
+    if args.method == "google":
+        print()
+        print("To use Vertex AI ADC instead, unset GOOGLE_API_KEY and set GOOGLE_APPLICATION_CREDENTIALS.")
+    return 0
+
+
+def _cmd_logout(args) -> int:
+    """Handle `gemini-py logout`."""
+    from .login import logout as _logout, LoginError
+
+    try:
+        deleted = _logout(scope=args.scope)
+    except LoginError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if deleted:
+        print(f"Logged out (removed {args.scope} credentials).")
+    else:
+        print(f"No {args.scope} credentials to remove.")
+    return 0
+
+
+def _cmd_whoami(args) -> int:
+    """Handle `gemini-py whoami`."""
+    from .login import whoami
+    info = whoami()
+    if info is None:
+        print("(no credentials configured)")
+        print()
+        print("Login with:  gemini-py login")
+        print("           or  from gemini_py import login; login('YOUR_KEY')")
+        return 0
+    print(f"Method:  {info['method']}")
+    print(f"API key: {info['api_key']}")
+    if info["project"]:
+        print(f"Project: {info['project']}")
+    if info["location"]:
+        print(f"Location: {info['location']}")
+    return 0
 
 
 def _resolve_resume(store: SessionStore, which: str):

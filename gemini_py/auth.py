@@ -34,20 +34,34 @@ class AuthMethod(str, Enum):
 
 
 def _env_search_paths() -> list:
-    """Return the list of .env search paths, computed lazily at call time."""
+    """Return the list of .env search paths, computed lazily at call time.
+
+    Order: project-local first, then user-wide. This means a project's
+    `.env` can override the user-wide `~/.gemini-py/.env`.
+    """
     return [
         Path.cwd() / ".env",
         Path.cwd() / ".gemini" / ".env",
         Path.home() / ".gemini" / ".env",
+        Path.home() / ".gemini-py" / ".env",
     ]
 
 
 def _load_env_files() -> None:
-    """Load the first .env file found in the search order."""
-    for path in _env_search_paths():
+    """Load variables from all .env files in general-to-specific order.
+
+    Files are loaded general → specific, so a more specific file (project
+    .env) overrides a less specific one (user .env). This differs slightly
+    from the gemini-cli behavior ("load first found only") because we want
+    `login()` to work reliably even when a project has its own `.env` that
+    doesn't set GEMINI_API_KEY.
+    """
+    paths = _env_search_paths()
+    # Reverse so general files load first, specific files last. Later loads
+    # (with override=True) override earlier ones — specific wins.
+    for path in reversed(paths):
         if path.is_file():
-            load_dotenv(path, override=False)
-            break
+            load_dotenv(path, override=True)
 
 
 @dataclass

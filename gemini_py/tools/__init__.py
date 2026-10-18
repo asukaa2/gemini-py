@@ -34,18 +34,29 @@ class Tool:
     executor: Callable[..., Any]
 
     def to_google_decl(self) -> Dict[str, Any]:
-        """Convert to the dict form accepted by google.genai.types.Tool."""
+        """Convert to the dict form accepted by google.genai.types.Tool.
+
+        Note: the `required` flag on individual properties is a gemini-py
+        convention (used by `build_default_tools`). The google-genai SDK
+        expects `required` to be a LIST at the parameters level, NOT a
+        bool inside each property spec. We strip the per-property `required`
+        flag here and lift it to the top-level list.
+        """
+        # Deep-copy the properties so we don't mutate the original Tool.
+        props: Dict[str, Any] = {}
+        required_names: list[str] = []
+        for name, spec in self.parameters.items():
+            spec = dict(spec)  # shallow copy
+            if spec.pop("required", False):
+                required_names.append(name)
+            props[name] = spec
         return {
             "name": self.name,
             "description": self.description,
             "parameters": {
                 "type": "object",
-                "properties": self.parameters,
-                "required": [
-                    name
-                    for name, spec in self.parameters.items()
-                    if spec.get("required")
-                ],
+                "properties": props,
+                "required": required_names,
             },
         }
 

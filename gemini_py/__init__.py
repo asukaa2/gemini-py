@@ -1,51 +1,44 @@
-"""
-gemini_py — Python + Gradio port of google-gemini/gemini-cli.
+"""gemini-py: A Python SDK and CLI for Google Gemini.
+
+A Python port of https://github.com/google-gemini/gemini-cli — headless/CLI-only
+(no TUI, no GUI). Uses argparse for the command-line interface.
 
 Public API:
-    Settings, GeminiClient, AgentLoop, AgentEvent, ToolRegistry,
-    build_default_registry, SessionStore, Session, MessageRecord, MCPManager
+    GeminiClient        — main client class for the Gemini API
+    AuthConfig          — authentication configuration
+    GeminiConfig        — model / generation configuration
+    SessionStore        — persistent conversation sessions
+    run_headless        — one-shot headless helper that mirrors `gemini -p`
+
+Example:
+    from gemini_py import GeminiClient, AuthConfig
+    client = GeminiClient(AuthConfig.from_env())
+    print(client.generate_text("Explain what 2 + 2 equals."))
 """
 
-from .agents import AgentEvent, AgentLoop
-from .client import AuthError, GeminiClient
-from .config import (
-    DEFAULT_MODEL_ID,
-    DEFAULT_MODELS,
-    DEFAULT_SYSTEM_PROMPT,
-    Settings,
-    app_data_dir,
-    sessions_dir,
-    workspace_root,
-)
-from .mcp import MCPManager
-from .sessions import MessageRecord, Session, SessionStore
-from .tools import (
-    Tool,
-    ToolRegistry,
-    ToolResult,
-    build_default_registry,
-)
+from .auth import AuthConfig, AuthMethod
+from .client import GeminiClient
+from .config import GeminiConfig, ModelAlias
+from .models import GenerateResult, Message, MessageRole, UsageStats
+from .sessions import SessionStore, SessionRecord
+from .output import OutputFormat, format_result
 
 __version__ = "0.1.0"
-
 __all__ = [
-    "AgentEvent",
-    "AgentLoop",
-    "AuthError",
-    "DEFAULT_MODEL_ID",
-    "DEFAULT_MODELS",
-    "DEFAULT_SYSTEM_PROMPT",
     "GeminiClient",
-    "MCPManager",
-    "MessageRecord",
-    "Session",
+    "AuthConfig",
+    "AuthMethod",
+    "GeminiConfig",
+    "ModelAlias",
+    "GenerateResult",
+    "Message",
+    "MessageRole",
+    "UsageStats",
     "SessionStore",
-    "Settings",
-    "Tool",
-    "ToolRegistry",
-    "ToolResult",
-    "app_data_dir",
-    "build_default_registry",
-    "sessions_dir",
-    "workspace_root",
+    "SessionRecord",
+    "OutputFormat",
+    "format_result",
+    "run_headless",
 ]
+
+from .client import run_headless

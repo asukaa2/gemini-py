@@ -23,7 +23,3 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Gradio
-gradio_cached_examples/
-flagged/

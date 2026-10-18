@@ -1,266 +1,96 @@
-"""
-Configuration and paths for gemini-cli-py.
+"""Generation configuration and model selection.
 
-Mirrors the role of `packages/core/src/config/` and `packages/core/src/utils/paths.ts`
-in the original TypeScript gemini-cli, but adapted to Python idioms.
+Mirrors the model aliases supported by the official `gemini-cli`:
+    auto        -> gemini-2.5-pro
+    pro         -> gemini-2.5-pro
+    flash       -> gemini-2.5-flash
+    flash-lite  -> gemini-2.5-flash-lite
 """
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
-
-# --------------------------------------------------------------------------- #
-# Paths
-# --------------------------------------------------------------------------- #
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Any, Dict, Optional
 
 
-def home_dir() -> Path:
-    """Return the user's home directory."""
-    return Path.home()
+class ModelAlias(str, Enum):
+    """Shortcuts that map to specific Gemini model names."""
 
+    AUTO = "auto"
+    PRO = "pro"
+    FLASH = "flash"
+    FLASH_LITE = "flash-lite"
 
-def app_data_dir() -> Path:
-    """Return the per-user app data directory (created lazily)."""
-    env = os.environ.get("GEMINI_PY_HOME")
-    if env:
-        p = Path(env).expanduser()
-    else:
-        p = home_dir() / ".gemini-py"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    def resolve(self) -> str:
+        """Resolve an alias to a concrete model name."""
+        mapping = {
+            ModelAlias.AUTO: "gemini-2.5-pro",
+            ModelAlias.PRO: "gemini-2.5-pro",
+            ModelAlias.FLASH: "gemini-2.5-flash",
+            ModelAlias.FLASH_LITE: "gemini-2.5-flash-lite",
+        }
+        return mapping[self]
 
-
-def sessions_dir() -> Path:
-    """Directory where conversation sessions are persisted as JSON."""
-    env = os.environ.get("GEMINI_SESSIONS_DIR")
-    if env:
-        p = Path(env).expanduser()
-    else:
-        p = app_data_dir() / "sessions"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def settings_file() -> Path:
-    """Path to the user settings JSON file."""
-    return app_data_dir() / "settings.json"
-
-
-def workspace_root() -> Path:
-    """Root directory the agent operates in (current working dir by default)."""
-    env = os.environ.get("GEMINI_WORKSPACE")
-    if env:
-        return Path(env).expanduser().resolve()
-    return Path.cwd()
-
-
-# --------------------------------------------------------------------------- #
-# Models
-# --------------------------------------------------------------------------- #
-
-# Curated list of currently-available Gemini models, sourced from the
-# official docs at https://ai.google.dev/gemini-api/docs/models (Oct 2026).
-#
-# The dropdown in the UI is populated from this list, but the model field
-# is free-form — users can type any model name their API key has access
-# to. The UI also queries `client.list_models()` at runtime to surface
-# every model the user's API key can actually see.
-#
-# Generation guide:
-#   • Gemini 4.x  → frontier model (Argon)
-#   • Gemini 3.8.x → latest stable Flash generation
-#   • Gemini 3.5.x → previous stable generation
-#   • Gemini 3.1.x → legacy stable
-#   • Nano Banana  → image generation and editing models
-#
-# NOTE: Gemini 2.0.x models were shut down on June 1, 2026. Do NOT list them.
-# NOTE: `gemini-2.5-flash-lite` is 404'ing for new API keys as of Oct 2026 —
-# Google redirects new users to `gemini-3.5-flash-lite`.
-
-DEFAULT_MODELS: list[dict[str, str]] = [
-    # ---- Gemini 4.x (frontier) ---- #
-    {
-        "id": "gemini-4-argon",
-        "label": "Gemini 4 Argon (recommended)",
-        "description": "Frontier model for complex workflows, deep reasoning, and structural precision. Best for coding, finance, law, and cybersecurity.",
-    },
-    # ---- Gemini 3.8.x (latest stable Flash) ---- #
-    {
-        "id": "gemini-3.8-flash",
-        "label": "Gemini 3.8 Flash",
-        "description": "Latest and most intelligent Flash model. Built for long-horizon software engineering and autonomous agents.",
-    },
-    {
-        "id": "gemini-3.8-flash-lite",
-        "label": "Gemini 3.8 Flash-Lite",
-        "description": "Lightest/cheapest Gemini 3.8. For high-volume low-latency tasks.",
-    },
-    # ---- Gemini 3.7.x ---- #
-    {
-        "id": "gemini-3.7-flash",
-        "label": "Gemini 3.7 Flash",
-        "description": "Previous stable Flash generation. Solid default if 3.8 or 4.x misbehaves.",
-    },
-    # ---- Gemini 3.6.x ---- #
-    {
-        "id": "gemini-3.6-flash",
-        "label": "Gemini 3.6 Flash",
-        "description": "Stable, mature Flash model. Reliable fallback.",
-    },
-    # ---- Gemini 3.5.x (previous stable) ---- #
-    {
-        "id": "gemini-3.5-flash",
-        "label": "Gemini 3.5 Flash",
-        "description": "Previous-gen fast model. Solid default if newer models misbehave.",
-    },
-    {
-        "id": "gemini-3.5-flash-lite",
-        "label": "Gemini 3.5 Flash-Lite",
-        "description": "Lightest/cheapest Gemini 3.x. For high-volume low-latency tasks.",
-    },
-    # ---- Gemini 3.1.x (legacy stable) ---- #
-    {
-        "id": "gemini-3.1-pro-preview",
-        "label": "Gemini 3.1 Pro (preview)",
-        "description": "Previous-generation Pro. Strong reasoning, long context. May be unstable.",
-    },
-    {
-        "id": "gemini-3.1-flash-lite",
-        "label": "Gemini 3.1 Flash-Lite",
-        "description": "Previous-gen Lite. Stable, very cheap, decent quality.",
-    },
-    # ---- Nano Banana image models ---- #
-    {
-        "id": "gemini-3.1-flash-image",
-        "label": "Nano Banana 2",
-        "description": "State-of-the-art native image generation and editing designed for fast, creative workflows.",
-    },
-    {
-        "id": "gemini-3.1-flash-lite-image",
-        "label": "Nano Banana 2 Lite",
-        "description": "Optimized for ultra-low latency and cost-effective image generation and editing.",
-    },
-    {
-        "id": "gemini-3-pro-image",
-        "label": "Nano Banana Pro",
-        "description": "High-fidelity image generation for professional-grade results.",
-    },
-]
-
-# Default model — Gemini 4 Argon is the current frontier model (Oct 2026).
-# Override with the GEMINI_MODEL env var if needed.
-DEFAULT_MODEL_ID = os.environ.get("GEMINI_MODEL", "gemini-4-argon")
-
-
-def model_id_to_label(model_id: str) -> str:
-    for m in DEFAULT_MODELS:
-        if m["id"] == model_id:
-            return m["label"]
-    return model_id
-
-
-# --------------------------------------------------------------------------- #
-# Settings
-# --------------------------------------------------------------------------- #
+    @classmethod
+    def is_alias(cls, value: str) -> bool:
+        """Check if a string is a known alias."""
+        try:
+            cls(value)
+            return True
+        except ValueError:
+            return False
 
 
 @dataclass
-class Settings:
-    """User-tunable settings, persisted to `settings.json`."""
+class GeminiConfig:
+    """Configuration for a single Gemini generation request.
 
-    api_key: str = ""
-    model: str = DEFAULT_MODEL_ID
+    Mirrors the most common gemini-cli flags. Maps directly to the
+    `google.genai` SDK's `GenerateContentConfig`.
+    """
+
+    model: str = ModelAlias.AUTO.resolve()
     temperature: float = 1.0
     top_p: float = 0.95
-    top_k: int = 40
-    max_output_tokens: int = 65536
-    system_prompt: str = ""
-    approval_mode: str = "default"  # default | yolo | plan
-    enable_streaming: bool = True
-    enable_google_search: bool = True
-    enable_shell: bool = True
-    enable_web_fetch: bool = True
-    enable_file_tools: bool = True
-    enable_mcp: bool = False
-    mcp_servers: list[dict[str, str]] = field(default_factory=list)
+    top_k: int = 64
+    max_output_tokens: int = 8192
+    system_instruction: Optional[str] = None
+    # Tool control
+    enable_shell_tool: bool = True
+    enable_filesystem_tools: bool = True
+    enable_web_search: bool = False
+    enable_web_fetch: bool = False
+    # Safety
+    safety_settings: list = field(default_factory=list)
 
-    # ---- persistence ---- #
+    def resolve_model(self) -> str:
+        """Return the resolved model name (alias -> concrete)."""
+        if ModelAlias.is_alias(self.model):
+            return ModelAlias(self.model).resolve()
+        return self.model
+
+    def to_generate_content_config(self) -> Dict[str, Any]:
+        """Convert to a dict usable by `google.genai.types.GenerateContentConfig`."""
+        cfg: Dict[str, Any] = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "max_output_tokens": self.max_output_tokens,
+        }
+        if self.system_instruction:
+            cfg["system_instruction"] = self.system_instruction
+        if self.safety_settings:
+            cfg["safety_settings"] = self.safety_settings
+        return cfg
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializable representation for session persistence."""
+        return asdict(self)
 
     @classmethod
-    def load(cls) -> "Settings":
-        s = cls()
-        path = settings_file()
-        if path.exists():
-            try:
-                import json
-
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                for k, v in raw.items():
-                    if hasattr(s, k):
-                        setattr(s, k, v)
-            except Exception:
-                # Corrupt settings file → start fresh
-                pass
-        # Environment variable takes precedence for the API key
-        env_key = os.environ.get("GEMINI_API_KEY", "")
-        if env_key:
-            s.api_key = env_key
-        return s
-
-    def save(self) -> None:
-        import json
-
-        path = settings_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Never persist the API key if it came from the env var
-        to_persist = {
-            k: v
-            for k, v in self.__dict__.items()
-            if k != "api_key" or not os.environ.get("GEMINI_API_KEY")
-        }
-        path.write_text(
-            json.dumps(to_persist, indent=2, default=str),
-            encoding="utf-8",
-        )
-
-    def to_dict(self) -> dict:
-        return self.__dict__.copy()
-
-
-# --------------------------------------------------------------------------- #
-# Default system prompt
-# --------------------------------------------------------------------------- #
-
-DEFAULT_SYSTEM_PROMPT = """You are Gemini, an AI coding assistant embedded in a \
-developer's terminal via a Gradio web UI. You are thoughtful, precise, and \
-pragmatic.
-
-You have access to a set of tools that let you read and edit files, list \
-directories, run shell commands, fetch web pages, and search the web. Use them \
-liberally to ground your answers in the user's actual codebase and the live web.
-
-When the user asks you to do something:
-
-1. If the task is about a codebase, **read the relevant files first** with the \
-`read_file` or `read_many_files` tool, or `list_directory` to explore. Do not \
-guess at file contents.
-2. If the task requires running something (tests, scripts, git commands), use \
-the `run_shell` tool. Capture stdout/stderr and report the result.
-3. If you need real-time information, use `google_search` (grounded) or \
-`web_fetch` (raw HTML → text).
-4. When editing files, prefer the `edit_file` tool over `write_file` when the \
-file already exists — it produces cleaner diffs.
-5. After every tool call, briefly tell the user what you did and what you found, \
-then continue with the next step or finish.
-
-Be concise in your prose. Show code blocks with proper language tags. If you \
-are uncertain, say so. If a tool fails, report the error and try an \
-alternative approach.
-
-You are running on the user's machine with their permissions. Be careful with \
-destructive operations (rm, git push --force, etc.) — explain what you're \
-about to do and let the user confirm if it seems risky.
-"""
+    def from_dict(cls, data: Dict[str, Any]) -> "GeminiConfig":
+        """Reconstruct from a serialized dict."""
+        # Only keep fields we know about.
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in data.items() if k in known})

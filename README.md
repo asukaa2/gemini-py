@@ -1,230 +1,160 @@
-# Gemini CLI — Python + Gradio Edition
+# gemini-py
 
-A from-scratch Python port of Google's [gemini-cli](https://github.com/google-gemini/gemini-cli)
-rewritten to use the official [`google-genai`](https://pypi.org/project/google-genai/)
-Python SDK and a [Gradio](https://gradio.app) web UI instead of the original
-TypeScript + Ink terminal UI.
+A Python SDK and headless CLI for **Google Gemini** — a Python port of
+[google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) that
+**uses CLI args, not a TUI/GUI**.
 
-This is **not** a line-by-line port — the original repo is a large TypeScript
-monorepo (`packages/cli`, `packages/core`, `packages/sdk`, `packages/a2a-server`,
-`packages/devtools`, `packages/vscode-ide-companion`) with hundreds of files
-covering terminal UI, node-pty sandboxing, MCP server hosting, A2A protocol,
-VSCode integration, telemetry, billing, and more. Many of those subsystems
-are deeply tied to the JS/TS ecosystem and either make no sense in Python
-(terminal TUI, node-pty) or already have good Python equivalents (MCP client
-via the `mcp` package, telemetry via OpenTelemetry).
+This package wraps the official [`google-genai`](https://pypi.org/project/google-genai/)
+SDK and exposes:
 
-Instead, this port captures the **core agent loop**: chat with Gemini, call
-tools (read/write/edit files, list dirs, run shell, web fetch, Google Search
-grounding, glob, ask_user), persist conversation sessions, and inspect the
-workspace side-by-side — all in a clean two-pane Gradio UI.
+1. A **GeminiClient** Python class for programmatic use, and
+2. A **`gemini-py` command-line tool** (argparse-based, no GUI) that mirrors
+   the most-used flags from the original `gemini` CLI:
+   `-p / --prompt`, `-m / --model`, `-o / --output-format`, `-r / --resume`,
+   `--list-sessions`, `--approval-mode`, etc.
 
-## ✨ Features
-
-| Feature | Status | Notes |
-|---|---|---|
-| Chat with Gemini (streaming) | ✅ | via `google-genai` |
-| Tool calling (function calls) | ✅ | agent loop with up to N tool iterations per turn |
-| `read_file`, `write_file`, `edit_file` | ✅ | with workspace sandboxing |
-| `list_directory` (recursive option) | ✅ | |
-| `read_many_files` (glob) | ✅ | respects exclude patterns |
-| `run_shell` | ✅ | with dangerous-command blocklist + timeout |
-| `web_fetch` | ✅ | HTML → Markdown via `html2text` |
-| `google_search` (grounded) | ✅ | via Gemini's Google Search tool |
-| `glob` | ✅ | |
-| `ask_user` | ⚠️ stub | the agent loop can route this to the UI; currently a placeholder |
-| MCP client (stdio servers) | ✅ | connect to existing MCP servers, expose their tools |
-| JSON session persistence | ✅ | `~/.gemini-py/sessions/*.json` |
-| Markdown rendering in chat | ✅ | Gradio's `render_markdown` |
-| File upload (images + PDF) | ✅ | sent as `inline_data` parts |
-| Tool-call cards | ✅ | collapsible bordered cards in chat |
-| Two-pane layout (chat + workspace) | ✅ | file tree + viewer on the right |
-| Approval flow for risky tools | ⚠️ partial | `requires_confirmation` flag is set; UI gate is a TODO |
-| OAuth login | ❌ | API key only (by design — see "Auth" below) |
-| Sandbox (seatbelt / bwrap) | ❌ | Python's `subprocess` only |
-| Skills, hooks, plan mode | ❌ | not ported from the TS version |
-| Telemetry, billing | ❌ | not ported |
-| Browser agent (Puppeteer) | ❌ | not ported |
-| VSCode companion | ❌ | N/A |
-
-## 🚀 Quick start
-
-### 1. Get an API key
-
-Go to <https://aistudio.google.com/apikey> and create a key (free tier: 1000
-requests/day with Gemini 2.5).
-
-### 2. Install dependencies
+## Installation
 
 ```bash
-cd gemini-cli-py
-python -m venv .venv
-source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .
+# or, after publishing:
+pip install gemini-py
 ```
 
-### 3. Set your API key
+## Authentication
 
-Either export it as an env var:
+Same environment variables as the official CLI:
+
+| Method                     | Env vars required                                              |
+| -------------------------- | ------------------------------------------------------------- |
+| Gemini API Key (default)   | `GEMINI_API_KEY`                                              |
+| Vertex AI with ADC         | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, ADC          |
+| Vertex AI with SA key      | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, ... |
+| Google Cloud API key       | `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`                      |
+
+`.env` files are auto-loaded from (in order):
+1. `./.env`
+2. `./.gemini/.env`
+3. `~/.gemini/.env`
+
+## CLI usage
 
 ```bash
-export GEMINI_API_KEY="your-key-here"
+# One-shot non-interactive prompt
+gemini-py -p "Explain how HTTP/3 works"
+
+# Pipe stdin into the prompt
+cat README.md | gemini-py -p "Summarize this file"
+
+# JSON output for scripting
+gemini-py -p "What time is it in Jakarta?" --output-format json
+
+# Streaming JSON events (JSONL)
+gemini-py -p "List 3 Python tips" --output-format stream-json
+
+# Choose a model alias (auto, pro, flash, flash-lite) or a concrete model
+gemini-py -p "Quick fact" --model flash
+
+# Resume the most recent session
+gemini-py -r latest -p "What did we discuss?"
+
+# Disable all built-in tools (text-only)
+gemini-py -p "Hello" --no-tools
+
+# Approve tool calls automatically
+gemini-py -p "List files" --yolo
+
+# List / delete sessions
+gemini-py sessions list
+gemini-py sessions delete 0
 ```
 
-…or copy `.env.example` to `.env` and fill it in:
+### Full flag reference
 
-```bash
-cp .env.example .env
-# edit .env
-```
+| Flag                  | Alias | Description                                            |
+| --------------------- | ----- | ----------------------------------------------------- |
+| `--prompt`            | `-p`  | Prompt text (forces non-interactive mode)             |
+| `--prompt-interactive`| `-i`  | Run prompt then stop (no TUI in this Python port)     |
+| `--model`             | `-m`  | Model alias or name (default: `auto`)                |
+| `--output-format`     | `-o`  | `text` (default), `json`, or `stream-json`           |
+| `--resume`            | `-r`  | Resume session: `latest`, index, or ID              |
+| `--list-sessions`     |       | List sessions for current project and exit           |
+| `--delete-session`   |       | Delete session by index                              |
+| `--include-directories` |     | Extra workspace dirs (comma-separated)               |
+| `--sandbox`           |       | (Stub) Sandbox mode                                   |
+| `--approval-mode`     |       | `default` / `auto_edit` / `yolo` / `plan`            |
+| `--yolo`              | `-y`  | Auto-approve all tool calls                           |
+| `--no-tools`          |       | Disable all built-in tools                           |
+| `--no-shell`          |       | Disable only the shell tool                          |
+| `--enable-web`        |       | Enable web_search + web_fetch tools                  |
+| `--system-prompt`     |       | Override system prompt. Use `-` to read from stdin   |
+| `--max-iterations`    |       | Max tool-call round-trips (default: 10)              |
+| `--max-output-tokens` |       | Max output tokens (default: 8192)                     |
+| `--temperature`       |       | Sampling temperature (default: 1.0)                  |
+| `--top-p`             |       | Top-p nucleus sampling (default: 0.95)              |
+| `--debug`             | `-d`  | Verbose logging                                       |
+| `--version`            | `-v` | Print version and exit                                |
+| `--help`              | `-h`  | Show help                                             |
 
-…or just paste it into the Settings panel in the UI after launch.
-
-### 4. Run
-
-```bash
-python app.py
-```
-
-Open <http://localhost:7860> in your browser.
-
-### CLI flags
-
-```
-python app.py --help
-python app.py --port 8080          # custom port
-python app.py --share              # create a public Gradio share link
-python app.py --workspace /path    # pin the workspace root
-```
-
-## 🏗 Architecture
-
-```
-gemini-cli-py/
-├── app.py                       # Entrypoint — launches Gradio
-├── requirements.txt
-├── .env.example
-├── README.md
-└── gemini_py/
-    ├── __init__.py
-    ├── config.py                # Settings, paths, model registry
-    ├── client.py                # GeminiClient — wraps google-genai SDK
-    ├── tools/
-    │   ├── __init__.py          # build_default_registry()
-    │   ├── base.py              # Tool ABC + ToolRegistry + ToolResult
-    │   └── builtin.py           # 10 built-in tools
-    ├── agents/
-    │   ├── __init__.py
-    │   └── loop.py              # AgentLoop — streams AgentEvents
-    ├── sessions/
-    │   ├── __init__.py
-    │   └── manager.py           # JSON-backed SessionStore
-    ├── mcp/
-    │   ├── __init__.py
-    │   └── client.py            # MCPManager — connects to stdio MCP servers
-    └── ui/
-        ├── __init__.py
-        └── app.py               # Gradio Blocks two-pane UI
-```
-
-### How the agent loop works
-
-1. The user submits a message. It's appended to the session's `messages` list.
-2. `AgentLoop.run()` converts the message list to the SDK's `contents`
-   shape, attaches the tool declarations from the registry, and calls
-   `client.stream(...)`.
-3. As chunks arrive, text deltas are streamed back to the UI.
-4. When the model emits a `function_call` part, the loop looks up the tool
-   by name in the registry, calls `tool.safe_run(args)`, and appends a
-   `tool` message to the history with the result.
-5. The loop repeats (up to `max_iterations` times per turn) until the model
-   stops calling tools.
-
-### How sessions work
-
-Every conversation has a 12-char hex id and lives at
-`~/.gemini-py/sessions/<id>.json`. The file contains the full message history
-including tool calls, the model used, and timestamps. The dropdown in the
-UI lets you switch / delete / create sessions freely.
-
-### How MCP works
-
-If `enable_mcp=true` (toggle in Settings) and the `mcp` package is installed,
-clicking **🔌 Connect MCP servers** will spawn each configured server as a
-subprocess, list its tools, and register each as a wrapped `Tool` in the
-registry under the name `mcp_<server>_<tool>`. Configure servers via the
-`GEMINI_MCP_SERVERS` env var (semicolon- or newline-separated command lines)
-or via the `mcp_servers` list in `~/.gemini-py/settings.json`.
-
-## 🔧 Customizing
-
-### Add a new built-in tool
+## SDK usage
 
 ```python
-# gemini_py/tools/my_tool.py
-from .base import Tool, ToolResult
+from gemini_py import GeminiClient, GeminiConfig, ModelAlias, run_headless
 
-class MyTool(Tool):
-    name = "my_tool"
-    description = "Does the thing."
-    parameters = {
-        "type": "object",
-        "properties": {"x": {"type": "integer"}},
-        "required": ["x"],
-    }
+# One-liner
+print(run_headless("Summarize the Python release notes.").text)
 
-    def run(self, x: int) -> ToolResult:
-        return ToolResult(output=f"x squared = {x*x}")
+# Full control
+client = GeminiClient(
+    config=GeminiConfig(
+        model=ModelAlias.FLASH,         # or a concrete model name
+        temperature=0.7,
+        enable_shell_tool=True,
+        enable_filesystem_tools=True,
+    )
+)
+
+# Simple generation
+r = client.generate_text("Explain what 2 + 2 equals.")
+print(r.text, r.usage.to_dict())
+
+# Agentic flow with built-in tools (filesystem + shell + optional web)
+result = client.run_agent_turn(
+    "List the Python files in this directory and tell me how many there are.",
+    max_iterations=5,
+)
+print(result.text)
+for tr in result.tool_results:
+    print(f"tool={tr['name']} result={tr['result'][:200]}")
+
+# Streaming
+for chunk in client.stream("Tell me a story about a robot."):
+    print(chunk, end="", flush=True)
 ```
 
-Then register it in `gemini_py/tools/__init__.py::build_default_registry()`.
+## Built-in tools
 
-### Change the system prompt
+| Tool                 | Description                                      |
+| -------------------- | ------------------------------------------------ |
+| `list_directory`     | List files and subdirectories in a directory    |
+| `read_file`          | Read UTF-8 text file contents                    |
+| `write_file`         | Write content to a file (overwrite)             |
+| `grep_search`        | Recursively search files for a regex             |
+| `run_shell_command`  | Run a shell command and return stdout/stderr    |
+| `web_search`         | Search the web (no API key; basic scraper)      |
+| `web_fetch`          | Fetch and strip a web page to plain text         |
 
-Either edit it in the Settings panel (persists to `settings.json`), or edit
-`DEFAULT_SYSTEM_PROMPT` in `gemini_py/config.py`.
+## What's **not** ported
 
-### Pin a different default model
+This is a focused Python port — the following are intentionally out of scope:
 
-Set `GEMINI_MODEL=gemini-2.5-pro` in your environment, or change
-`DEFAULT_MODEL_ID` in `gemini_py/config.py`.
+- The interactive TUI (Ink/React-based) — the user explicitly requested CLI args only.
+- The extensions system (gemini-cli's TypeScript plugin format).
+- The MCP server registry (use `mcp` Python packages directly).
+- Sandbox mode (Docker/Podman-based) — flag is accepted but ignored.
+- Auto-memory / GEMINI.md hierarchical context (planned).
+- Skills / subagents.
 
-## 🔐 Auth model
+## License
 
-Only API-key auth is supported (by design — the original's OAuth flow requires
-a Google client ID and a callback server, which is overkill for a personal
-dev tool). The key can come from:
-
-1. `GEMINI_API_KEY` env var (highest precedence)
-2. `~/.gemini-py/settings.json` (saved by the Settings panel)
-3. `.env` file in CWD (loaded by `python-dotenv`)
-
-## 📋 What was NOT ported (and why)
-
-| Subsystem | Reason |
-|---|---|
-| Ink terminal TUI | Replaced by Gradio web UI — the whole point of this port |
-| `node-pty` shell sandbox | Python's `subprocess` is fine; OS-level sandbox (seatbelt/bwrap) is out of scope |
-| OAuth login | API key only — see "Auth model" |
-| Hooks system | Would require a YAML/TOML config schema; can be added later |
-| Skills system | Same — heavy config-driven feature, deferred |
-| Plan mode | UI affordance only; can be added later |
-| Browser agent (Puppeteer) | Use Playwright in Python if needed — out of scope here |
-| A2A server | A separate protocol; not relevant to the chat UX |
-| VSCode companion | N/A — Gradio is browser-based |
-| Telemetry / billing | Internal Google infra; not applicable |
-| Checkpointing | Sessions JSON store covers the resume use case |
-| Context compression / token accounting | Gemini's API handles context window truncation server-side for 2.x models |
-
-## 📄 License
-
-Apache 2.0, same as the original `google-gemini/gemini-cli`. The original
-project is © Google LLC. This Python port is an independent implementation
-that uses the same public Gemini API.
-
-## 🙏 Acknowledgments
-
-- The [gemini-cli](https://github.com/google-gemini/gemini-cli) team for the
-  original design and toolset.
-- The [google-genai](https://github.com/googleapis/python-genai) Python SDK team.
-- The [Gradio](https://github.com/gradio-app/gradio) team for the UI framework.
+Apache-2.0 (same as the upstream gemini-cli).

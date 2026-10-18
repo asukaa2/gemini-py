@@ -113,6 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-tools", action="store_true", help="Disable built-in tools (text-only).")
     parser.add_argument("--no-shell", action="store_true", help="Disable the shell tool only.")
     parser.add_argument("--enable-web", action="store_true", help="Enable web_search and web_fetch tools.")
+    parser.add_argument("--no-memory", action="store_true", help="Disable hierarchical GEMINI.md auto-memory.")
+    parser.add_argument("--no-skills", action="store_true", help="Disable @skill_name expansion and skill listing.")
+    parser.add_argument("--no-subagent", action="store_true", help="Disable the delegate_subagent tool.")
+    parser.add_argument("--no-mcp", action="store_true", help="Do not connect to configured MCP servers.")
     parser.add_argument(
         "--system-prompt",
         help="Override the system prompt. Use '-' to read from stdin.",
@@ -136,15 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _build_subcommand_parser() -> argparse.ArgumentParser:
-    """A parser that only handles the subcommands (sessions/extensions/mcp)."""
+    """A parser that only handles the subcommands (sessions/extensions/mcp/skills)."""
     parser = argparse.ArgumentParser(
         prog="gemini-py",
-        description="Subcommands for sessions/extensions/mcp management.",
+        description="Subcommands for sessions/extensions/mcp/skills management.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     _add_sessions_subparser(subparsers)
     _add_extensions_subparser(subparsers)
     _add_mcp_subparser(subparsers)
+    _add_skills_subparser(subparsers)
     return parser
 
 
@@ -165,9 +170,45 @@ def _add_extensions_subparser(subparsers) -> None:
 
 
 def _add_mcp_subparser(subparsers) -> None:
-    p = subparsers.add_parser("mcp", help="Manage MCP servers (stub).")
+    p = subparsers.add_parser("mcp", help="Manage MCP servers.")
     sub = p.add_subparsers(dest="mcp_cmd", required=True)
-    sub.add_parser("list", help="List configured MCP servers (always empty in this Python port).")
+    sub.add_parser("list", help="List configured MCP servers.")
+
+    add = sub.add_parser("add", help="Add an MCP server.")
+    add.add_argument("name", help="Server name (used to namespace its tools).")
+    add.add_argument("command_or_url", help="Command (stdio) or URL (http). For stdio, additional positional args are forwarded.")
+    # Use REMAINDER so that flags like -y / --foo meant for the subprocess
+    # are passed through verbatim instead of being eaten by argparse.
+    add.add_argument("cmd_args", nargs=argparse.REMAINDER, help="Args for the stdio command (after the command, including flags).")
+    add.add_argument("--transport", choices=["stdio", "http"], default="auto", help="Transport type (default: auto-detect from URL).")
+    add.add_argument("--env", action="append", default=[], help="Env var KEY=value (repeatable).")
+    add.add_argument("--cwd", help="Working directory for the stdio subprocess.")
+    add.add_argument("--scope", choices=["user", "project"], default="user", help="Where to persist the config.")
+    add.add_argument("--include-tools", help="Comma-separated tool names to expose (default: all).")
+    add.add_argument("--disabled", action="store_true", help="Add but leave disabled.")
+
+    remove = sub.add_parser("remove", help="Remove an MCP server by name.")
+    remove.add_argument("name", help="Server name.")
+
+    enable = sub.add_parser("enable", help="Enable an MCP server.")
+    enable.add_argument("name", help="Server name.")
+
+    disable = sub.add_parser("disable", help="Disable an MCP server.")
+    disable.add_argument("name", help="Server name.")
+
+
+def _add_skills_subparser(subparsers) -> None:
+    p = subparsers.add_parser("skills", help="Manage agent skills.")
+    sub = p.add_subparsers(dest="skills_cmd", required=True)
+    sub.add_parser("list", help="List discovered skills.")
+    show = sub.add_parser("show", help="Print a skill's full prompt content.")
+    show.add_argument("name", help="Skill name.")
+    enable = sub.add_parser("enable", help="Enable a skill.")
+    enable.add_argument("name", help="Skill name.")
+    disable = sub.add_parser("disable", help="Disable a skill.")
+    disable.add_argument("name", help="Skill name.")
+    sub.add_parser("enable-all", help="Enable all discovered skills.")
+    sub.add_parser("disable-all", help="Disable all discovered skills.")
 
 
 # --- Main entry -------------------------------------------------------------
@@ -179,7 +220,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Detect subcommands BEFORE argparse, so that the positional `query`
     # argument doesn't swallow them when no -p is given.
-    SUBCOMMANDS = {"sessions", "extensions", "mcp"}
+    SUBCOMMANDS = {"sessions", "extensions", "mcp", "skills"}
     if raw_argv and raw_argv[0] in SUBCOMMANDS:
         # Build a parser that only knows about subcommands + their options.
         parser = _build_subcommand_parser()
@@ -190,6 +231,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _cmd_extensions(args)
         if args.command == "mcp":
             return _cmd_mcp(args)
+        if args.command == "skills":
+            return _cmd_skills(args)
         return 1
 
     parser = build_parser()
@@ -284,13 +327,38 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print_stream(event)
             return 0
 
-        # Regular non-stream run
-        result = client.run_agent_turn(
-            prompt,
-            tools=tools,
-            config=cfg,
-            max_iterations=args.max_iterations,
-        )
+        # Connect to MCP servers (if enabled & any are configured).
+        mcp_client = None
+        if not args.no_mcp:
+            try:
+                from .mcp import McpRegistry, McpClient, MCP_AVAILABLE
+                if MCP_AVAILABLE:
+                    registry = McpRegistry()
+                    if registry.enabled_servers():
+                        mcp_client = McpClient(registry)
+                        mcp_client.start()
+            except Exception as e:
+                sys.stderr.write(f"[gemini-py] MCP setup failed: {e}\n")
+                mcp_client = None
+
+        try:
+            # Regular non-stream run
+            result = client.run_agent_turn(
+                prompt,
+                tools=tools,
+                config=cfg,
+                max_iterations=args.max_iterations,
+                enable_memory=not args.no_memory,
+                enable_skills=not args.no_skills,
+                enable_subagent=not args.no_subagent,
+                mcp_client=mcp_client,
+            )
+        finally:
+            if mcp_client is not None:
+                try:
+                    mcp_client.stop()
+                except Exception:
+                    pass
         print(format_result(result, fmt))
         return 0
     except GeminiError as e:
@@ -377,10 +445,168 @@ def _cmd_extensions(args) -> int:
 
 
 def _cmd_mcp(args) -> int:
+    """Handle `gemini-py mcp <list|add|remove|enable|disable>`."""
+    from .mcp import McpRegistry, McpServerConfig, MCP_AVAILABLE, parse_env_pair
+
+    if not MCP_AVAILABLE:
+        print(
+            "Error: mcp package not installed. Run `pip install mcp`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    registry = McpRegistry()
+
     if args.mcp_cmd == "list":
-        print("(no MCP servers configured — Python port does not include an MCP registry)")
+        servers = registry.list()
+        if not servers:
+            print("(no MCP servers configured)")
+            print()
+            print("Add one with: gemini-py mcp add <name> <command> [args...]")
+            print("       or:    gemini-py mcp add <name> <url> --transport http")
+            return 0
+        print(f"MCP servers ({len(servers)}):")
+        for s in servers:
+            state = "enabled" if s.enabled else "disabled"
+            print(f"  [{state:8s}] {s.describe()}")
+            if s.include_tools:
+                print(f"              include-tools: {', '.join(s.include_tools)}")
         return 0
-    return 0
+
+    if args.mcp_cmd == "add":
+        # Auto-detect transport: URL → http, else stdio.
+        transport = args.transport
+        if transport == "auto":
+            transport = "http" if _looks_like_url(args.command_or_url) else "stdio"
+
+        # Build env dict
+        env: dict = {}
+        for pair in args.env:
+            try:
+                k, v = parse_env_pair(pair)
+                env[k] = v
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+
+        include = (
+            [t.strip() for t in args.include_tools.split(",") if t.strip()]
+            if args.include_tools
+            else []
+        )
+
+        if transport == "http":
+            cfg = McpServerConfig(
+                name=args.name,
+                transport="http",
+                url=args.command_or_url,
+                scope=args.scope,
+                include_tools=include,
+                enabled=not args.disabled,
+            )
+        else:
+            cfg = McpServerConfig(
+                name=args.name,
+                transport="stdio",
+                command=args.command_or_url,
+                args=list(args.cmd_args),
+                env=env,
+                cwd=args.cwd,
+                scope=args.scope,
+                include_tools=include,
+                enabled=not args.disabled,
+            )
+        registry.add(cfg)
+        print(f"Added MCP server '{cfg.name}' (scope={cfg.scope}, transport={cfg.transport})")
+        return 0
+
+    if args.mcp_cmd == "remove":
+        if registry.remove(args.name):
+            print(f"Removed MCP server '{args.name}'")
+            return 0
+        print(f"Error: no MCP server named '{args.name}'", file=sys.stderr)
+        return 1
+
+    if args.mcp_cmd == "enable":
+        if registry.set_enabled(args.name, True):
+            print(f"Enabled MCP server '{args.name}'")
+            return 0
+        print(f"Error: no MCP server named '{args.name}'", file=sys.stderr)
+        return 1
+
+    if args.mcp_cmd == "disable":
+        if registry.set_enabled(args.name, False):
+            print(f"Disabled MCP server '{args.name}'")
+            return 0
+        print(f"Error: no MCP server named '{args.name}'", file=sys.stderr)
+        return 1
+
+    return 1
+
+
+def _cmd_skills(args) -> int:
+    """Handle `gemini-py skills <list|show|enable|disable|enable-all|disable-all>`."""
+    from .skills import SkillsLoader
+
+    loader = SkillsLoader()
+
+    if args.skills_cmd == "list":
+        skills = loader.list()
+        if not skills:
+            print("(no skills discovered)")
+            print()
+            print("Skills live in: ~/.gemini-py/skills/<name>/SKILL.md")
+            print("              or ./.gemini/skills/<name>/SKILL.md")
+            return 0
+        print(f"Skills ({len(skills)}):")
+        for s in skills:
+            state = "enabled" if s.enabled else "disabled"
+            desc = s.description or "(no description)"
+            print(f"  [{state:8s}] @{s.name}  ({s.scope})  {desc[:80]}")
+        return 0
+
+    if args.skills_cmd == "show":
+        skill = loader.get(args.name)
+        if skill is None:
+            print(f"Error: no skill named '{args.name}'", file=sys.stderr)
+            return 1
+        print(f"# Skill: {skill.name}")
+        print(f"# Source: {skill.file_path}")
+        print(f"# Scope:  {skill.scope}")
+        print(f"# State:  {'enabled' if skill.enabled else 'disabled'}")
+        print()
+        print(skill.full_prompt())
+        return 0
+
+    if args.skills_cmd == "enable":
+        if loader.set_enabled(args.name, True):
+            print(f"Enabled skill '{args.name}'")
+            return 0
+        print(f"Error: no skill named '{args.name}'", file=sys.stderr)
+        return 1
+
+    if args.skills_cmd == "disable":
+        if loader.set_enabled(args.name, False):
+            print(f"Disabled skill '{args.name}'")
+            return 0
+        print(f"Error: no skill named '{args.name}'", file=sys.stderr)
+        return 1
+
+    if args.skills_cmd == "enable-all":
+        loader.enable_all()
+        print(f"Enabled all {len(loader.list())} skills")
+        return 0
+
+    if args.skills_cmd == "disable-all":
+        loader.disable_all()
+        print(f"Disabled all {len(loader.list())} skills")
+        return 0
+
+    return 1
+
+
+def _looks_like_url(s: str) -> bool:
+    return s.startswith(("http://", "https://"))
 
 
 def _resolve_resume(store: SessionStore, which: str):

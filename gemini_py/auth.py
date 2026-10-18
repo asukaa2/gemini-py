@@ -33,17 +33,18 @@ class AuthMethod(str, Enum):
     AUTO = "auto"                       # Auto-detect from environment
 
 
-# Search locations for .env files (mirrors gemini-cli behavior).
-_ENV_SEARCH_PATHS = [
-    Path.cwd() / ".env",
-    Path.cwd() / ".gemini" / ".env",
-    Path.home() / ".gemini" / ".env",
-]
+def _env_search_paths() -> list:
+    """Return the list of .env search paths, computed lazily at call time."""
+    return [
+        Path.cwd() / ".env",
+        Path.cwd() / ".gemini" / ".env",
+        Path.home() / ".gemini" / ".env",
+    ]
 
 
 def _load_env_files() -> None:
     """Load the first .env file found in the search order."""
-    for path in _ENV_SEARCH_PATHS:
+    for path in _env_search_paths():
         if path.is_file():
             load_dotenv(path, override=False)
             break

@@ -56,6 +56,10 @@ class GeminiClient:
         self.auth = auth or AuthConfig.from_env()
         self.config = config or GeminiConfig()
         self._client = self._build_underlying_client()
+        # Register this instance as the "last client" so the subagent tool
+        # (which is built lazily inside run_agent_turn) can spawn a child turn
+        # using the same auth + config.
+        _LAST_CLIENT_REF[0] = self
 
     # --- Construction -----------------------------------------------------
 
@@ -188,12 +192,30 @@ class GeminiClient:
         max_iterations: int = 10,
         extra_context: Optional[str] = None,
         on_event: Optional[Any] = None,
+        # New integrations (default-on, can be opted out):
+        enable_memory: bool = True,
+        enable_skills: bool = True,
+        enable_subagent: bool = True,
+        mcp_client: Optional[Any] = None,
+        skills_loader: Optional[Any] = None,
     ) -> GenerateResult:
         """Run a single agent turn with tool-calling.
 
         The model can call tools; we execute them and feed back the results
         until the model produces a final text response or `max_iterations`
         is reached.
+
+        New integrations:
+            - **Auto-memory**: hierarchical GEMINI.md files are loaded and
+              appended to the system instruction (set `enable_memory=False`
+              to skip).
+            - **Skills**: `@skill_name` tokens in the prompt are expanded to
+              the skill's content (set `enable_skills=False` to skip).
+            - **Subagent**: the `delegate_subagent(skill, task)` tool is
+              exposed so the model can spawn a focused subagent (set
+              `enable_subagent=False` to skip).
+            - **MCP**: pass an `mcp_client` (already `.start()`-ed) to
+              expose its tools alongside the built-in ones.
 
         Args:
             prompt: User's prompt.
@@ -202,6 +224,11 @@ class GeminiClient:
             max_iterations: Max tool-call round-trips.
             extra_context: Extra context for the system prompt.
             on_event: Optional callback(event: dict) for each tool call.
+            enable_memory: Load hierarchical GEMINI.md context (default True).
+            enable_skills: Expand @skill tokens + list skills in prompt.
+            enable_subagent: Expose the delegate_subagent tool.
+            mcp_client: An McpClient whose tools should be exposed.
+            skills_loader: Optional pre-built SkillsLoader.
 
         Returns:
             GenerateResult with the final answer + tool history.
@@ -212,13 +239,66 @@ class GeminiClient:
             enable_filesystem=cfg.enable_filesystem_tools,
             enable_web=cfg.enable_web_search or cfg.enable_web_fetch,
         )
-        declarations = tool_declarations(tools)
 
-        # Build the system instruction
-        system = cfg.system_instruction or build_system_prompt(
-            enable_tools=bool(tools),
-            extra_context=extra_context,
-        )
+        # --- Skills loader (lazy init) ---------------------------------
+        if skills_loader is None and enable_skills:
+            try:
+                from .skills import SkillsLoader
+                skills_loader = SkillsLoader()
+            except Exception:
+                skills_loader = None
+
+        # --- Expand @skill_name tokens in prompt -----------------------
+        if enable_skills and skills_loader is not None:
+            from .skills import expand_skills_in_prompt
+            prompt = expand_skills_in_prompt(prompt, skills_loader)
+
+        # --- Add the subagent tool -------------------------------------
+        if enable_subagent:
+            subagent_tool = _build_subagent_tool(skills_loader)
+            if subagent_tool is not None:
+                tools = list(tools) + [subagent_tool]
+
+        # --- Declarations = built-in + MCP -----------------------------
+        declarations = tool_declarations(tools)
+        if mcp_client is not None:
+            try:
+                mcp_decls = mcp_client.list_tools()
+                if mcp_decls:
+                    # Combine under the same tools list (google-genai accepts
+                    # a list of Tool dicts, each with function_declarations).
+                    declarations = declarations + [{"function_declarations": mcp_decls}]
+            except Exception as e:
+                sys.stderr.write(
+                    f"[gemini-py] MCP list_tools failed: {e}\n"
+                )
+
+        # --- Build system instruction with memory + skills summary -----
+        if cfg.system_instruction:
+            system = cfg.system_instruction
+        else:
+            system = build_system_prompt(enable_tools=bool(tools))
+        # Append memory context
+        if enable_memory:
+            try:
+                from .memory import load_memory
+                mem = load_memory()
+                if mem:
+                    system = system + "\n\n# Project context (from GEMINI.md)\n" + mem
+            except Exception as e:
+                sys.stderr.write(f"[gemini-py] memory load failed: {e}\n")
+        # Append extra context (e.g., stdin)
+        if extra_context:
+            system = system + "\n\n# Additional context\n" + extra_context
+        # Append skills summary
+        if enable_skills and skills_loader is not None:
+            try:
+                summary = skills_loader.render_summary()
+                if summary:
+                    system = system + "\n\n" + summary
+            except Exception:
+                pass
+
         gen_cfg = {
             **cfg.to_generate_content_config(),
             "system_instruction": system,
@@ -291,7 +371,12 @@ class GeminiClient:
             for fc in function_calls:
                 if on_event:
                     on_event({"type": "tool_call", "name": fc["name"], "args": fc["args"]})
-                result = execute_tool_call(tools, fc)
+                result = self._dispatch_tool_call(
+                    tools=tools,
+                    fc=fc,
+                    mcp_client=mcp_client,
+                    skills_loader=skills_loader,
+                )
                 response_parts.append(result)
                 tool_results.append(
                     {
@@ -318,6 +403,51 @@ class GeminiClient:
             model=model,
             tool_results=tool_results,
         )
+
+    # --- Tool dispatch (built-in + MCP + subagent) -----------------------
+
+    def _dispatch_tool_call(
+        self,
+        *,
+        tools: List[Tool],
+        fc: Dict[str, Any],
+        mcp_client: Optional[Any],
+        skills_loader: Optional[Any],
+    ) -> Dict[str, Any]:
+        """Route a function call to the right executor.
+
+        Order:
+            1. Built-in tool with the same name -> execute_tool_call()
+            2. MCP tool (name starts with `mcp_`) -> mcp_client.call_tool()
+            3. The subagent tool (handled by its own executor)
+            4. Unknown -> error response
+        """
+        name = fc.get("name", "")
+        args = fc.get("args") or {}
+
+        # 1. Built-in / subagent tool
+        from .tools import find_tool, execute_tool_call
+        tool = find_tool(tools, name)
+        if tool is not None:
+            return execute_tool_call(tools, fc)
+
+        # 2. MCP tool
+        if name.startswith("mcp_") and mcp_client is not None:
+            result_text = mcp_client.call_tool(name, args)
+            return {
+                "function_response": {
+                    "name": name,
+                    "response": {"result": result_text},
+                }
+            }
+
+        # 3. Unknown
+        return {
+            "function_response": {
+                "name": name,
+                "response": {"result": f"Error: unknown tool '{name}'"},
+            }
+        }
 
     # --- Headless one-shot ------------------------------------------------
 
@@ -434,6 +564,75 @@ class GeminiClient:
 
 
 # --- Convenience top-level function -----------------------------------------
+
+
+def _build_subagent_tool(skills_loader: Optional[Any]) -> Optional[Tool]:
+    """Construct the `delegate_subagent` tool, gated on available skills.
+
+    Returns None if no skills are loaded (so the model never sees a tool
+    that has nothing to delegate to).
+    """
+    if skills_loader is None:
+        return None
+    try:
+        enabled = skills_loader.enabled()
+    except Exception:
+        return None
+    if not enabled:
+        return None
+
+    # Build a comma-separated list of skill names for the description.
+    names = ", ".join(s.name for s in enabled)
+
+    def _exec(skill: str, task: str, **_):
+        # Imported here to avoid circular imports at module load time.
+        from .skills.subagent import delegate_to_subagent
+        # Reuse the singleton client if available, else build a throwaway one.
+        # We use a global "last client" reference (set by GeminiClient.__init__).
+        client_ref = _LAST_CLIENT_REF[0]
+        if client_ref is None:
+            return "Error: no parent GeminiClient available for subagent delegation."
+        result = delegate_to_subagent(
+            parent_client=client_ref,
+            skill_name=skill,
+            task=task,
+            skills_loader=skills_loader,
+        )
+        if not result.success:
+            return f"Subagent error ({skill}): {result.error}"
+        text = result.text
+        if result.tool_results:
+            text += "\n\n(subagent tool calls: " + ", ".join(
+                tr["name"] for tr in result.tool_results
+            ) + ")"
+        return text
+
+    return Tool(
+        name="delegate_subagent",
+        description=(
+            "Delegate a focused task to a specialized subagent driven by a "
+            f"skill. Available skills: {names}. The subagent runs in its "
+            "own agent turn and returns its final answer."
+        ),
+        parameters={
+            "skill": {
+                "type": "string",
+                "description": "The skill name to activate for the subagent.",
+                "required": True,
+            },
+            "task": {
+                "type": "string",
+                "description": "The task to delegate to the subagent.",
+                "required": True,
+            },
+        },
+        executor=_exec,
+    )
+
+
+# Module-level singleton reference to the last-constructed GeminiClient.
+# Used by the subagent tool to spawn a child turn without re-auth.
+_LAST_CLIENT_REF: List[Any] = [None]
 
 
 def run_headless(prompt: str, **kwargs) -> GenerateResult:

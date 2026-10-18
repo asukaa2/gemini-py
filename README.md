@@ -87,6 +87,10 @@ gemini-py sessions delete 0
 | `--no-tools`          |       | Disable all built-in tools                           |
 | `--no-shell`          |       | Disable only the shell tool                          |
 | `--enable-web`        |       | Enable web_search + web_fetch tools                  |
+| `--no-memory`         |       | Disable hierarchical GEMINI.md auto-memory          |
+| `--no-skills`         |       | Disable @skill_name expansion + skill listing       |
+| `--no-subagent`       |       | Disable the delegate_subagent tool                   |
+| `--no-mcp`            |       | Do not connect to configured MCP servers             |
 | `--system-prompt`     |       | Override system prompt. Use `-` to read from stdin   |
 | `--max-iterations`    |       | Max tool-call round-trips (default: 10)              |
 | `--max-output-tokens` |       | Max output tokens (default: 8192)                     |
@@ -150,10 +154,99 @@ This is a focused Python port — the following are intentionally out of scope:
 
 - The interactive TUI (Ink/React-based) — the user explicitly requested CLI args only.
 - The extensions system (gemini-cli's TypeScript plugin format).
-- The MCP server registry (use `mcp` Python packages directly).
 - Sandbox mode (Docker/Podman-based) — flag is accepted but ignored.
-- Auto-memory / GEMINI.md hierarchical context (planned).
-- Skills / subagents.
+
+## Ported subsystems (v0.2)
+
+The following features that were originally "not ported" have now been
+ported in this release:
+
+### MCP server registry
+
+Connect to external MCP servers (stdio or HTTP) and expose their tools to
+the Gemini model as regular function-call tools.
+
+```bash
+# Add a stdio server (auto-detected)
+gemini-py mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# Add an HTTP server
+gemini-py mcp add api-server https://example.com/mcp --transport http
+
+# Add with env vars + tool filter
+gemini-py mcp add github npx -y @modelcontextprotocol/server-github \
+  --env GITHUB_TOKEN=ghp_xxx --include-tools list_repos,get_pr
+
+# List / enable / disable / remove
+gemini-py mcp list
+gemini-py mcp enable filesystem
+gemini-py mcp disable filesystem
+gemini-py mcp remove filesystem
+```
+
+MCP tool names are namespaced as `mcp_<server>__<tool>` to avoid collisions
+with built-in tools. Configs are persisted to `~/.gemini-py/mcp.json`
+(scope=user) or `./.gemini/mcp.json` (scope=project).
+
+To skip MCP in a single run: `gemini-py -p "..." --no-mcp`.
+
+### Auto-memory (GEMINI.md hierarchy)
+
+Hierarchical `GEMINI.md` files are loaded and injected into the system
+prompt on every agent turn. The search order is:
+
+1. `~/.gemini/GEMINI.md` (user-wide preferences)
+2. Each parent of cwd up to home (project hierarchy)
+3. `cwd/.gemini/GEMINI.md` (project-scoped)
+4. `cwd/GEMINI.md` (most specific, project root)
+
+Each chunk is rendered with a `# Memory: <path>` header. Use
+`# gemini-py-ignore` in a file to stop processing from that point.
+
+To disable: `gemini-py -p "..." --no-memory`.
+
+### Skills & subagents
+
+A **skill** is a directory containing a `SKILL.md` file under
+`~/.gemini-py/skills/<name>/` or `./.gemini/skills/<name>/`. Skills are
+loaded automatically and exposed to the model in two ways:
+
+1. **`@skill_name` expansion** — any `@skill_name` token in your prompt
+   is replaced inline with the skill's full content.
+2. **`delegate_subagent(skill, task)` tool** — the model can spawn a
+   sub-agent that runs a fresh agent turn with the skill's content as its
+   system prompt and returns the sub-agent's final answer.
+
+```bash
+# Discover skills
+gemini-py skills list
+gemini-py skills show code-reviewer
+gemini-py skills enable code-reviewer
+gemini-py skills disable code-reviewer
+gemini-py skills enable-all
+gemini-py skills disable-all
+
+# Use a skill inline
+gemini-py -p "@code-reviewer Please review src/foo.py"
+
+# Let the model delegate
+gemini-py -p "Review src/foo.py using the code-reviewer skill"
+```
+
+To disable: `--no-skills` (no @-expansion + no skill listing),
+`--no-subagent` (no delegate_subagent tool).
+
+### Skill file format
+
+```markdown
+# <Skill Name>
+
+A one-paragraph description (becomes the skill's description in the listing).
+
+The rest of the file is the skill's full prompt content. When @skill is
+used in a prompt or a subagent is delegated, this content is injected
+verbatim.
+```
 
 ## License
 

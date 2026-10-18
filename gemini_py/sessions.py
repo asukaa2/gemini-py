@@ -23,7 +23,11 @@ from .config import GeminiConfig
 from .models import Message
 
 
-SESSIONS_DIR = Path.home() / ".gemini-py" / "sessions"
+SESSIONS_DIR = None  # computed lazily at SessionStore init
+
+
+def _default_sessions_dir() -> Path:
+    return Path.home() / ".gemini-py" / "sessions"
 
 
 @dataclass
@@ -58,7 +62,7 @@ class SessionStore:
     """Filesystem-backed session store."""
 
     def __init__(self, base_dir: Optional[Path] = None) -> None:
-        self.base_dir = base_dir or SESSIONS_DIR
+        self.base_dir = base_dir or _default_sessions_dir()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     # --- CRUD ------------------------------------------------------------

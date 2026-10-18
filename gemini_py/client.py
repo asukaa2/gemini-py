@@ -310,8 +310,12 @@ class GeminiClient:
             {"role": "user", "parts": [{"text": prompt}]}
         ]
         tool_results: List[Dict[str, Any]] = []
+        # Track recent call fingerprints (name+sorted args) to detect when
+        # the model is stuck in a loop re-issuing the same call.
+        recent_calls: List[str] = []
+        last_text_chunk: str = ""
 
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
             try:
                 response = self._client.models.generate_content(
                     model=model,
@@ -348,6 +352,11 @@ class GeminiClient:
                             {
                                 "name": getattr(fc, "name", ""),
                                 "args": dict(getattr(fc, "args", {}) or {}),
+                                # Preserve the call id so the API can link
+                                # the function_response back to this call.
+                                # Missing linkage causes the model to
+                                # re-issue the same call every turn.
+                                "id": getattr(fc, "id", None),
                             }
                         )
                         # Preserve the original Part (carries thought_signature).
@@ -361,6 +370,43 @@ class GeminiClient:
                     usage=usage,
                     model=model,
                     finish_reason=str(getattr(candidates[0], "finish_reason", "") if candidates else ""),
+                    tool_results=tool_results,
+                    raw=response,
+                )
+
+            # Loop detection: if the model makes the exact same call (by
+            # name + sorted args) three times in a row, break out of the
+            # loop and return whatever text we have so far. This is a
+            # safety valve for cases where the model is stuck repeating
+            # the same tool call (often because the result confuses it).
+            current_fingerprints = [
+                f"{fc['name']}:{json.dumps(fc.get('args') or {}, sort_keys=True)}"
+                for fc in function_calls
+            ]
+            recent_calls.extend(current_fingerprints)
+            # Keep only the last 6 fingerprints (3 iterations * up-to-2-calls).
+            recent_calls = recent_calls[-6:]
+            # If the same fingerprint appears 3+ times, treat as a loop.
+            from collections import Counter
+            counts = Counter(recent_calls)
+            looped = [fp for fp, n in counts.items() if n >= 3]
+            if looped:
+                # If we have any text from the model, return it. Otherwise
+                # produce a helpful diagnostic.
+                summary_lines = []
+                if text_parts:
+                    summary_lines.extend(text_parts)
+                summary_lines.append(
+                    f"\n[Stopped: model repeated the same tool call "
+                    f"{len(looped)} time(s) — likely stuck. Last calls: "
+                    f"{', '.join(fp.split(':', 1)[0] for fp in looped)}.]"
+                )
+                usage = UsageStats.from_metadata(getattr(response, "usage_metadata", None))
+                return GenerateResult(
+                    text="\n".join(summary_lines),
+                    usage=usage,
+                    model=model,
+                    finish_reason="loop_detected",
                     tool_results=tool_results,
                     raw=response,
                 )
@@ -404,11 +450,21 @@ class GeminiClient:
 
             contents.append({"role": "user", "parts": response_parts})
 
-        # Exceeded iterations
+        # Exceeded iterations without a final answer.
+        # Provide a helpful diagnostic so the user knows what to tune.
         return GenerateResult(
-            text="(max tool-call iterations reached)",
+            text=(
+                f"(agent hit the max-iterations limit of {max_iterations} "
+                f"without producing a final answer). "
+                f"Possible causes: (1) the model is stuck in a tool-call "
+                f"loop — try `--max-iterations 25` or a more capable model "
+                f"(`--model argon`); (2) a tool returned an error the model "
+                f"can't recover from — check tool_results; (3) the task is "
+                f"genuinely complex — raise `--max-iterations` or split it."
+            ),
             usage=UsageStats(),
             model=model,
+            finish_reason="max_iterations_reached",
             tool_results=tool_results,
         )
 
@@ -442,20 +498,22 @@ class GeminiClient:
         # 2. MCP tool
         if name.startswith("mcp_") and mcp_client is not None:
             result_text = mcp_client.call_tool(name, args)
-            return {
-                "function_response": {
-                    "name": name,
-                    "response": {"result": result_text},
-                }
+            response: Dict[str, Any] = {
+                "name": name,
+                "response": {"result": result_text},
             }
+            if fc.get("id"):
+                response["id"] = fc["id"]
+            return {"function_response": response}
 
         # 3. Unknown
-        return {
-            "function_response": {
-                "name": name,
-                "response": {"result": f"Error: unknown tool '{name}'"},
-            }
+        response = {
+            "name": name,
+            "response": {"result": f"Error: unknown tool '{name}'"},
         }
+        if fc.get("id"):
+            response["id"] = fc["id"]
+        return {"function_response": response}
 
     # --- Headless one-shot ------------------------------------------------
 

@@ -26,7 +26,7 @@ from .models import GenerateResult, Message, MessageRole, UsageStats
 from .sessions import SessionStore, SessionRecord
 from .output import OutputFormat, format_result
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = [
     "GeminiClient",
     "AuthConfig",

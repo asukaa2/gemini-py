@@ -124,8 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=10,
-        help="Max tool-call round-trips in agent mode (default: 10).",
+        default=25,
+        help="Max tool-call round-trips in agent mode (default: 25).",
     )
     parser.add_argument("--max-output-tokens", type=int, default=8192, help="Max output tokens.")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")

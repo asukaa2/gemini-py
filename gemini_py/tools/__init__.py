@@ -310,10 +310,16 @@ def execute_tool_call(
     """Execute a single function call from the model.
 
     Returns a dict suitable for `client.models.generate_content` part:
-        {"function_response": {"name": ..., "response": {"result": ...}}}
+        {"function_response": {"name": ..., "response": {"result": ...}, "id": ...}}
+
+    The `id` field (if present on the call) is forwarded to the response so
+    the Gemini API can link the function_call to its function_response.
+    Missing `id` linkage is a common cause of agent loops where the model
+    re-issues the same call every turn until max_iterations is hit.
     """
     name = call.get("name", "")
     args = call.get("args") or {}
+    call_id = call.get("id")  # may be None; forward when present
     tool = find_tool(tools, name)
     if tool is None:
         result = f"Error: unknown tool '{name}'"
@@ -322,9 +328,10 @@ def execute_tool_call(
             result = tool.executor(**args)
         except Exception as e:
             result = f"Error executing {name}: {e}"
-    return {
-        "function_response": {
-            "name": name,
-            "response": {"result": str(result)},
-        }
+    response: Dict[str, Any] = {
+        "name": name,
+        "response": {"result": str(result)},
     }
+    if call_id:
+        response["id"] = call_id
+    return {"function_response": response}

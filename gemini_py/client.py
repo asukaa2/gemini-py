@@ -321,9 +321,14 @@ class GeminiClient:
             except Exception as e:
                 raise GeminiError(f"agent iteration failed: {e}") from e
 
-            # Extract any function calls
+            # Extract any function calls. We preserve the ORIGINAL Part
+            # objects so we can pass them back to the API unchanged — the
+            # Gemini API now requires `thought_signature` on function-call
+            # parts (Oct 2026), and rebuilding parts from just name+args
+            # drops that signature, causing HTTP 400 INVALID_ARGUMENT.
             candidates = getattr(response, "candidates", []) or []
-            function_calls = []
+            function_calls = []          # list of {"name", "args"} for exec
+            model_parts: List[Any] = []  # original Part objects for the next round
             text_parts: List[str] = []
 
             for cand in candidates:
@@ -345,6 +350,8 @@ class GeminiClient:
                                 "args": dict(getattr(fc, "args", {}) or {}),
                             }
                         )
+                        # Preserve the original Part (carries thought_signature).
+                        model_parts.append(part)
 
             if not function_calls:
                 # No tool calls — this is the final answer.
@@ -359,10 +366,11 @@ class GeminiClient:
                 )
 
             # Append the model's response (with calls) to the conversation.
+            # Pass the original Part objects so thought_signature survives.
             contents.append(
                 {
                     "role": "model",
-                    "parts": [{"function_call": {"name": fc["name"], "args": fc["args"]}} for fc in function_calls],
+                    "parts": model_parts,
                 }
             )
 

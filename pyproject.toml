@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gemini-py"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python SDK and CLI for Google Gemini — a Python port of google-gemini/gemini-cli (headless/CLI-only)"
 readme = "README.md"
 requires-python = ">=3.9"

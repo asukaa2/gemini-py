@@ -100,8 +100,9 @@ gemini-py -p "What time is it in Jakarta?" --output-format json
 # Streaming JSON events (JSONL)
 gemini-py -p "List 3 Python tips" --output-format stream-json
 
-# Choose a model alias (auto, pro, flash, flash-lite) or a concrete model
+# Choose a model alias (auto, argon, pro, flash, flash-lite, ...) or a concrete model
 gemini-py -p "Quick fact" --model flash
+gemini-py -p "Complex reasoning" --model argon   # GA gemini-4-argon
 
 # Resume the most recent session
 gemini-py -r latest -p "What did we discuss?"
@@ -300,6 +301,25 @@ The rest of the file is the skill's full prompt content. When @skill is
 used in a prompt or a subagent is delegated, this content is injected
 verbatim.
 ```
+
+## Model aliases
+
+Updated to match AI Studio's Oct 2026 lineup (see
+https://ai.google.dev/gemini-api/docs/changelog):
+
+| Alias          | Resolves To              | Description                                       |
+| -------------- | ------------------------ | ------------------------------------------------- |
+| `auto`         | `gemini-3.8-flash`       | **Default.** AI Studio recommended for new projects. |
+| `argon`        | `gemini-4-argon`         | Most capable (GA through Dec 31, 2026).           |
+| `pro`          | `gemini-3.1-pro`         | Advanced reasoning for coding and complex tasks. |
+| `flash`        | `gemini-3.8-flash`       | Frontier intelligence built for speed.            |
+| `flash-lite`   | `gemini-3.5-flash-lite`  | Low-latency, cost-effective subagent.             |
+| `flash-latest` | `gemini-flash-latest`    | Google's rolling "latest Flash" alias.            |
+| `omni`         | `gemini-omni-1.1-flash`  | Video generation and editing.                     |
+| `transcribe`   | `gemini-3.5-transcribe`  | Speech-to-text.                                   |
+| `tts`          | `gemini-3.8-flash-tts`   | Text-to-speech.                                   |
+
+You can also pass any concrete model name (e.g. `gemini-3.1-flash-lite-image`).
 
 ## License
 

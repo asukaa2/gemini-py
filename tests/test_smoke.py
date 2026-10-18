@@ -21,16 +21,32 @@ from gemini_py import __version__
 
 
 def test_version():
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.4.0"
 
 
 def test_model_alias_resolves():
-    assert ModelAlias.AUTO.resolve() == "gemini-2.5-pro"
-    assert ModelAlias.PRO.resolve() == "gemini-2.5-pro"
-    assert ModelAlias.FLASH.resolve() == "gemini-2.5-flash"
-    assert ModelAlias.FLASH_LITE.resolve() == "gemini-2.5-flash-lite"
+    # Latest AI Studio lineup (Oct 2026)
+    assert ModelAlias.AUTO.resolve() == "gemini-3.8-flash"
+    assert ModelAlias.ARGON.resolve() == "gemini-4-argon"
+    assert ModelAlias.PRO.resolve() == "gemini-3.1-pro"
+    assert ModelAlias.FLASH.resolve() == "gemini-3.8-flash"
+    assert ModelAlias.FLASH_LITE.resolve() == "gemini-3.5-flash-lite"
+    assert ModelAlias.FLASH_LATEST.resolve() == "gemini-flash-latest"
+    assert ModelAlias.OMNI.resolve() == "gemini-omni-1.1-flash"
+    assert ModelAlias.TRANSCRIBE.resolve() == "gemini-3.5-transcribe"
+    assert ModelAlias.TTS.resolve() == "gemini-3.8-flash-tts"
     assert ModelAlias.is_alias("flash") is True
-    assert ModelAlias.is_alias("gemini-2.5-pro") is False
+    assert ModelAlias.is_alias("argon") is True
+    assert ModelAlias.is_alias("gemini-3.8-flash") is False
+
+
+def test_model_alias_all_aliases():
+    aliases = ModelAlias.all_aliases()
+    assert "auto" in aliases
+    assert "argon" in aliases
+    assert "flash" in aliases
+    assert aliases["auto"] == "gemini-3.8-flash"
+    assert aliases["argon"] == "gemini-4-argon"
 
 
 def test_config_round_trip():
@@ -41,7 +57,8 @@ def test_config_round_trip():
     cfg2 = GeminiConfig.from_dict(d)
     assert cfg2.model == "flash"
     assert cfg2.temperature == 0.5
-    assert cfg2.resolve_model() == "gemini-2.5-flash"
+    # flash -> gemini-3.8-flash (Oct 2026 alias)
+    assert cfg2.resolve_model() == "gemini-3.8-flash"
 
 
 def test_message_round_trip():

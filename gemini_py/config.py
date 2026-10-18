@@ -1,10 +1,19 @@
 """Generation configuration and model selection.
 
-Mirrors the model aliases supported by the official `gemini-cli`:
-    auto        -> gemini-2.5-pro
-    pro         -> gemini-2.5-pro
-    flash       -> gemini-2.5-flash
-    flash-lite  -> gemini-2.5-flash-lite
+Mirrors the latest AI Studio model lineup (as of 2026-10-13) plus the
+gemini-cli alias convention. Aliases resolve as follows:
+
+    auto          -> gemini-3.8-flash        (AI Studio recommended default)
+    argon         -> gemini-4-argon          (most capable, GA via Dec 2026)
+    pro           -> gemini-3.1-pro          (advanced reasoning)
+    flash         -> gemini-3.8-flash        (frontier speed)
+    flash-lite    -> gemini-3.5-flash-lite   (low-latency subagent)
+    flash-latest  -> gemini-flash-latest     (Google's rolling "latest" alias)
+    omni          -> gemini-omni-1.1-flash   (video generation/editing)
+    transcribe    -> gemini-3.5-transcribe   (speech-to-text)
+    tts           -> gemini-3.8-flash-tts     (text-to-speech)
+
+Source: https://ai.google.dev/gemini-api/docs/changelog (Oct 13, 2026 entry)
 """
 
 from __future__ import annotations
@@ -15,20 +24,43 @@ from typing import Any, Dict, Optional
 
 
 class ModelAlias(str, Enum):
-    """Shortcuts that map to specific Gemini model names."""
+    """Shortcuts that map to specific Gemini model names.
+
+    Resolutions are kept in sync with the AI Studio model lineup as of
+    October 2026. See https://ai.google.dev/gemini-api/docs/changelog.
+    """
 
     AUTO = "auto"
+    ARGON = "argon"
     PRO = "pro"
     FLASH = "flash"
     FLASH_LITE = "flash-lite"
+    FLASH_LATEST = "flash-latest"
+    OMNI = "omni"
+    TRANSCRIBE = "transcribe"
+    TTS = "tts"
 
     def resolve(self) -> str:
         """Resolve an alias to a concrete model name."""
         mapping = {
-            ModelAlias.AUTO: "gemini-2.5-pro",
-            ModelAlias.PRO: "gemini-2.5-pro",
-            ModelAlias.FLASH: "gemini-2.5-flash",
-            ModelAlias.FLASH_LITE: "gemini-2.5-flash-lite",
+            # Default — AI Studio's recommended model for new projects.
+            ModelAlias.AUTO: "gemini-3.8-flash",
+            # Most capable model (GA through Dec 31, 2026).
+            ModelAlias.ARGON: "gemini-4-argon",
+            # Advanced reasoning for coding and complex tasks.
+            ModelAlias.PRO: "gemini-3.1-pro",
+            # Frontier intelligence built for speed.
+            ModelAlias.FLASH: "gemini-3.8-flash",
+            # Low-latency, cost-effective subagent.
+            ModelAlias.FLASH_LITE: "gemini-3.5-flash-lite",
+            # Google's rolling "latest" alias — points to newest Flash.
+            ModelAlias.FLASH_LATEST: "gemini-flash-latest",
+            # Video generation and editing.
+            ModelAlias.OMNI: "gemini-omni-1.1-flash",
+            # Speech-to-text.
+            ModelAlias.TRANSCRIBE: "gemini-3.5-transcribe",
+            # Text-to-speech.
+            ModelAlias.TTS: "gemini-3.8-flash-tts",
         }
         return mapping[self]
 
@@ -40,6 +72,11 @@ class ModelAlias(str, Enum):
             return True
         except ValueError:
             return False
+
+    @classmethod
+    def all_aliases(cls) -> Dict[str, str]:
+        """Return a {alias: resolved_model} dict for help text / `--help`."""
+        return {alias.value: alias.resolve() for alias in cls}
 
 
 @dataclass

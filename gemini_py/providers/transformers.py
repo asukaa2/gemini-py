@@ -86,6 +86,21 @@ class TransformersProvider(Provider):
         prompt = self._build_prompt(contents, hf_tools)
         text = self._generate(prompt, config)
         tool_calls, remaining_text = _parse_tool_calls(text)
+
+        # FALLBACK: if no explicit tool-call markers were found, look for
+        # code blocks with file paths (```lang:path\n...\n```) and
+        # synthesize write_file calls from them. This makes transformers
+        # able to write files even when the model isn't trained for
+        # function-calling — as long as it emits code blocks with paths
+        # (a common convention in chat responses).
+        if not tool_calls:
+            fallback_calls = _extract_write_file_from_code_blocks(text)
+            if fallback_calls:
+                tool_calls.extend(fallback_calls)
+                # Remove the code blocks from the remaining text (since
+                # they're now being written as files).
+                remaining_text = _strip_code_blocks(text, fallback_calls)
+
         if tool_calls:
             return text_with_tool_calls_response(remaining_text, tool_calls)
         return _StreamedResponse(
@@ -111,6 +126,14 @@ class TransformersProvider(Provider):
         prompt = self._build_prompt(contents, hf_tools)
         text = self._generate(prompt, config)
         tool_calls, remaining_text = _parse_tool_calls(text)
+
+        # Same fallback as in generate_content.
+        if not tool_calls:
+            fallback_calls = _extract_write_file_from_code_blocks(text)
+            if fallback_calls:
+                tool_calls.extend(fallback_calls)
+                remaining_text = _strip_code_blocks(text, fallback_calls)
+
         if tool_calls:
             yield text_with_tool_calls_response(remaining_text, tool_calls)
         else:
@@ -499,3 +522,139 @@ def _normalize_tool_call_obj(obj: Any) -> List[Dict[str, Any]]:
             args = {"_raw": args}
     call_id = obj.get("id")
     return [{"name": name, "args": args, "id": call_id}]
+
+
+# --- Code-block fallback (for models that don't emit tool-call markers) ----
+
+
+# Map language hints to file extensions for synthesizing write_file paths.
+_LANG_TO_EXT = {
+    "python": "py", "py": "py", "py3": "py",
+    "javascript": "js", "js": "js", "mjs": "js", "cjs": "js",
+    "typescript": "ts", "ts": "ts", "tsx": "tsx",
+    "jsx": "jsx",
+    "html": "html", "htm": "html",
+    "css": "css",
+    "json": "json",
+    "markdown": "md", "md": "md",
+    "bash": "sh", "sh": "sh", "shell": "sh",
+    "yaml": "yaml", "yml": "yaml",
+    "toml": "toml",
+    "sql": "sql",
+    "go": "go",
+    "rust": "rs", "rs": "rs",
+    "java": "java",
+    "c": "c", "h": "h",
+    "cpp": "cpp", "cc": "cpp", "hpp": "hpp",
+    "ruby": "rb", "rb": "rb",
+    "php": "php",
+    "xml": "xml",
+    "ini": "ini",
+    "dockerfile": "dockerfile",
+    "text": "txt", "txt": "txt", "plaintext": "txt",
+}
+
+
+# Pattern 1: ```lang:path\n<content>\n```  (filename after language)
+#   Example: ```python:hello.py\nprint("hello")\n```
+_CODE_BLOCK_WITH_PATH = re.compile(
+    r"```([a-zA-Z0-9_+-]+):([^\s\n]+)\n(.*?)```",
+    re.DOTALL,
+)
+
+# Pattern 2: ```lang\n# filename: path\n<content>\n```  (filename in first comment)
+#   Example: ```python\n# filename: hello.py\nprint("hello")\n```
+_CODE_BLOCK_WITH_FILENAME_COMMENT = re.compile(
+    r"```([a-zA-Z0-9_+-]+)\n#\s*(?:filename|file|path)\s*:\s*([^\n]+)\n(.*?)```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Pattern 3: ```lang\n# path/to/file.py\n<content>\n```  (path as first comment, no "filename:" prefix)
+_CODE_BLOCK_WITH_PATH_COMMENT = re.compile(
+    r"```([a-zA-Z0-9_+-]+)\n#\s*([./a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)\n(.*?)```",
+    re.DOTALL,
+)
+
+
+def _extract_write_file_from_code_blocks(text: str) -> List[Dict[str, Any]]:
+    """Look for code blocks with embedded file paths and synthesize
+    write_file tool calls for each one.
+
+    Recognized patterns:
+      1. ```lang:path/to/file.ext
+         <content>
+         ```
+      2. ```lang
+         # filename: path/to/file.ext
+         <content>
+         ```
+      3. ```lang
+         # path/to/file.ext
+         <content>
+         ```
+
+    If the path has no extension, we synthesize one from the language
+    hint (e.g. `python` → `.py`, `javascript` → `.js`).
+
+    Returns a list of {"name": "write_file", "args": {"path": ..., "content": ...}}
+    tool-call dicts, or [] if no code blocks with paths are found.
+
+    This is a FALLBACK for models that don't emit explicit tool-call
+    markers (e.g. base instruct models without function-calling training).
+    It lets users still get files written when they ask "create a hello.py
+    file with print('hello')".
+    """
+    if not text:
+        return []
+    calls: List[Dict[str, Any]] = []
+    seen_paths: set = set()
+
+    for pattern in (
+        _CODE_BLOCK_WITH_PATH,
+        _CODE_BLOCK_WITH_FILENAME_COMMENT,
+        _CODE_BLOCK_WITH_PATH_COMMENT,
+    ):
+        for m in pattern.finditer(text):
+            lang = m.group(1).lower()
+            path = m.group(2).strip().strip("`'\"")
+            content = m.group(3)
+            # Strip a trailing newline if present (markdown code blocks
+            # usually have one).
+            if content.endswith("\n"):
+                content = content[:-1]
+            # If the path has no extension, add one based on the language.
+            if "." not in path.rsplit("/", 1)[-1]:
+                ext = _LANG_TO_EXT.get(lang, "txt")
+                path = f"{path}.{ext}"
+            # Skip duplicates (same path).
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            calls.append({
+                "name": "write_file",
+                "args": {"path": path, "content": content},
+                "id": None,
+            })
+    return calls
+
+
+def _strip_code_blocks(text: str, calls: List[Dict[str, Any]]) -> str:
+    """Remove the code blocks that were converted to write_file calls,
+    so the remaining text the agent loop sees doesn't duplicate them.
+    """
+    remaining = text
+    for call in calls:
+        content = call["args"].get("content", "")
+        if not content:
+            continue
+        # Strip the content (escape regex special chars).
+        escaped = re.escape(content)
+        # Match ```...content...``` (with optional lang + path prefix).
+        pattern = re.compile(
+            r"```[a-zA-Z0-9_+-]+(?::[^\s\n]+)?\n" + escaped + r"\n?```",
+            re.DOTALL,
+        )
+        remaining = pattern.sub("", remaining)
+    # Clean up extra whitespace.
+    remaining = re.sub(r"\n{3,}", "\n\n", remaining).strip()
+    return remaining

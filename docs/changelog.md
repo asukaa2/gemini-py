@@ -3,6 +3,44 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.6] — 2026-10-19
+
+### Added
+- TransformersProvider: code-block fallback so it can write files like
+  other providers. When the model doesn't emit explicit tool-call
+  markers (most base instruct models without function-calling training),
+  the provider now scans the model's text output for code blocks with
+  embedded file paths and synthesizes `write_file` tool calls from them.
+
+  Recognized patterns:
+    1. ` ```lang:path/to/file.ext ` + content + ` ``` ` (filename
+       after language — common in markdown editors)
+    2. ` ```lang ` + `# filename: path/to/file.ext` + content + ` ``` `
+       (filename in first comment)
+    3. ` ```lang ` + `# path/to/file.ext` + content + ` ``` ` (path as
+       first comment, no "filename:" prefix)
+
+  If the path has no extension, we synthesize one from the language
+  hint (e.g. `python` → `.py`, `javascript` → `.js`, `rust` → `.rs`).
+  `_LANG_TO_EXT` covers 30+ common languages.
+
+  Once a code block is converted to a write_file call, it's stripped
+  from the remaining text the agent loop sees (so the file doesn't
+  appear both as a written file AND in the final answer).
+
+  This is a FALLBACK only — if the model emits explicit tool-call
+  markers (`<|tool_call|>...<|/tool_call|>`, `【...】`, etc.), those
+  take precedence (handled by `_parse_tool_calls()` from v0.6.1).
+
+### Added (tests)
+- `tests/test_transformers_codeblock_fallback.py` — 18 new tests
+  covering all 3 patterns, multiple files, duplicate paths, extension
+  synthesis, the `_strip_code_blocks` helper, and the `_LANG_TO_EXT`
+  map.
+
+### Changed
+- Bumped version to 0.6.6.
+
 ## [0.6.5] — 2026-10-19
 
 ### Fixed

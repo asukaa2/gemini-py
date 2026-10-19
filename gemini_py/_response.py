@@ -140,3 +140,48 @@ def text_response(text: str, *, usage: Optional[dict] = None, raw: Any = None) -
 def text_chunk(text: str) -> _StreamedResponse:
     """Build a streaming chunk carrying incremental text."""
     return _StreamedResponse(parts=[_TextPart(text)], text=text, usage_metadata=None, raw=None)
+
+
+def text_with_tool_calls_response(
+    text: str,
+    tool_calls: List[Dict[str, Any]],
+    *,
+    usage: Optional[dict] = None,
+    raw: Any = None,
+) -> _StreamedResponse:
+    """Build a response carrying both leftover text and parsed tool calls.
+
+    Used by providers that need to PARSE tool calls out of model output
+    (e.g. HuggingFace transformers — the model emits tool-call markers
+    in its output text that we parse into _FunctionCallParts).
+
+    Args:
+        text: The leftover text after removing tool_call markers. May be
+            empty if the model emitted only tool calls.
+        tool_calls: List of {"name": str, "args": dict, "id": Optional[str]}.
+        usage: Optional token-usage dict.
+        raw: Optional raw response object.
+
+    Returns:
+        A _StreamedResponse with one _TextPart (if text) + one
+        _FunctionCallPart per tool_call.
+    """
+    parts: List[Any] = []
+    if text:
+        parts.append(_TextPart(text))
+    for i, tc in enumerate(tool_calls):
+        name = tc.get("name", "")
+        args = tc.get("args", {}) or {}
+        call_id = tc.get("id") or f"call_{i}"
+        parts.append(_FunctionCallPart(name=name, args=args, call_id=call_id))
+    full_text = text if text else "(tool calls only)"
+    um = None
+    if usage:
+        um = _UsageMetadata(**usage)
+    return _StreamedResponse(
+        parts=parts,
+        text=full_text,
+        usage_metadata=um,
+        raw=raw,
+        finish_reason="STOP" if tool_calls else "",
+    )

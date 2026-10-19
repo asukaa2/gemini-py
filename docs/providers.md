@@ -13,14 +13,15 @@ custom provider.
 | `openai` | `openai` Python SDK | ❌ (text-only) | `pip install openai` |
 | `anthropic` | `anthropic` Python SDK | ❌ (text-only) | `pip install anthropic` |
 | `ollama` | HTTP to local Ollama | ❌ (text-only) | none (uses urllib) |
-| `transformers` | HuggingFace transformers | ❌ (text-only) | `pip install transformers torch` |
+| `transformers` | HuggingFace transformers | ✅ (parses markers) | `pip install transformers torch` |
 | `custom` | user-supplied callable | ❌ (text-only) | none |
 
-**Note**: non-Gemini providers currently support text generation only.
-Function-calling / agentic flow (with tools) only works with the Gemini
-provider. We're working on adapters for OpenAI/Anthropic native
-tool-calling. When you run `run_agent_turn` with a non-Gemini provider,
-the CLI auto-disables tools and prints a warning.
+**Note**: OpenAI, Anthropic, and Ollama providers currently support text
+generation only. Transformers provider supports function-calling via
+output-text parsing. We're working on adapters for OpenAI/Anthropic
+native tool-calling. When you run `run_agent_turn` with a non-Gemini
+provider that doesn't support function-calling, the CLI auto-disables
+tools and prints a warning.
 
 ## Picking a provider from the CLI
 
@@ -174,6 +175,59 @@ gemini-py -p "Hello" --provider transformers --provider-model microsoft/Phi-3-mi
 
 GPU is auto-detected via `torch.cuda.is_available()`. To force CPU,
 unset `CUDA_VISIBLE_DEVICES`.
+
+### Function-calling with Transformers (v0.6.1+)
+
+The Transformers provider supports function-calling via output-text
+parsing. When you run an agent turn with tools enabled, the provider:
+
+1. Converts the Google `function_declarations` to HuggingFace tools
+   format.
+2. Tries `tokenizer.apply_chat_template(messages, tools=hf_tools, ...)`.
+3. If the template doesn't accept `tools=` (some models), falls back
+   to injecting a system message describing the tools.
+4. Generates text.
+5. Parses tool-call markers out of the model's output text.
+6. Returns `_FunctionCallPart` objects for each detected call.
+
+Recognized tool-call marker formats:
+
+- `<|tool_call|>{...}<|/tool_call|>`  (Hermes / Llama-3 style)
+- `【{...}】`  (Qwen2.5 style)
+- `[TOOL_CALLS] {...}`  (Mistral style)
+- ` ```tool\n{...}\n``` ` or ` ```json\n{...}\n``` ` (fenced code block)
+- bare `{"name": "...", "arguments": {...}}` JSON
+
+The JSON can use `"name"` + `"arguments"` (standard) or `"name"` +
+`"args"` (alias). The `arguments` field can be either a dict or a JSON
+string (Qwen format).
+
+Recommended models for function-calling:
+
+- `Qwen/Qwen2.5-1.5B-Instruct` — works well, small enough for CPU.
+- `Qwen/Qwen2.5-Coder-7B-Instruct` — coding + tools.
+- `meta-llama/Llama-3.1-8B-Instruct` — Hermes-style tool calls.
+- `NousResearch/Hermes-2-Pro-Llama-3-8B` — explicit Hermes format.
+- `mistralai/Mistral-Nemo-Instruct-2407` — Mistral-style.
+
+Example:
+
+```bash
+gemini-py -p "List the Python files in the current directory" \
+  --provider transformers \
+  --provider-model Qwen/Qwen2.5-1.5B-Instruct \
+  --live
+```
+
+The agent loop will:
+1. Call `list_directory(path=".")` (model emits a tool call).
+2. Receive the directory listing as a tool result.
+3. Filter for `.py` files in the response.
+4. Return a final answer.
+
+The quality of tool-calling depends heavily on the model. Small models
+(360M / 1B params) often fail to produce valid tool-call markers. For
+reliable function-calling, use at least 7B-parameter models.
 
 ## The Provider protocol
 

@@ -3,6 +3,40 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] — 2026-10-19
+
+### Added
+- Function-calling support for the TransformersProvider. The provider now
+  converts Google function_declarations to HuggingFace tools format,
+  injects them via `tokenizer.apply_chat_template(tools=...)` (or as a
+  system message fallback), and parses tool-call markers out of the
+  model's output text.
+- Tool-call marker parser (`_parse_tool_calls`) recognizes:
+  - `<|tool_call|>{...}<|/tool_call|>`  (Hermes / Llama-3)
+  - `【{...}】`  (Qwen2.5)
+  - `[TOOL_CALLS] {...}`  (Mistral)
+  - ` ```tool\n{...}\n``` ` (fenced code block)
+  - bare `{"name": "...", "arguments": {...}}` JSON
+- `text_with_tool_calls_response()` helper in `_response.py` for building
+  responses with both text + function_call parts.
+- `contents_to_chat_messages()` now converts function_call parts (becomes
+  assistant message with `tool_calls`) and function_response parts
+  (becomes 'tool' role message with `tool_call_id`).
+- `_extract_part_function_call()` / `_extract_part_function_response()`
+  helpers in `_converters.py` for both dict-style and object-style parts.
+- `TransformersProvider.supports_tools()` returns True.
+- 25 new tests in `tests/test_transformers_tools.py` covering parser
+  (all marker formats), normalization (args/arguments alias, string
+  args, function/name alias), converter updates (function_call +
+  function_response parts), and the `text_with_tool_calls_response`
+  helper.
+
+### Changed
+- `TransformersProvider` now reads `config["tools"]` (Google
+  function_declarations format) and converts to HF tools via
+  `_tools_to_hf_format()`.
+- Bumped version to 0.6.1.
+
 ## [0.6.0] — 2026-10-19
 
 ### Added

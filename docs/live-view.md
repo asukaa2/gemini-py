@@ -4,25 +4,68 @@ The `--live` flag renders a real-time dashboard so you can watch the
 AI think, call tools, and write code as it happens — like the original
 gemini-cli's interactive TUI, but using `rich.live.Live` + `Layout`.
 
-## What it looks like
+## Screenshots
 
+### Thinking state
+
+The model is streaming text chunks. The body shows the model's
+thinking in dim italic, accumulating as text streams in.
+
+<p align="center">
+  <img src="./assets/live-view-thinking.svg" alt="Live view — thinking state" width="100%" />
+</p>
+
+### Tool call in progress
+
+The model has emitted a `list_directory` tool call. The header shows
+`status=calling list_directory` and `tools=1`.
+
+<p align="center">
+  <img src="./assets/live-view-tool-call.svg" alt="Live view — tool call in progress" width="100%" />
+</p>
+
+### Tool result received
+
+The tool returned and is shown in the transcript. Color-coded: green
+for success, red for errors.
+
+<p align="center">
+  <img src="./assets/live-view-tool-result.svg" alt="Live view — tool result received" width="100%" />
+</p>
+
+### `write_file` code panel
+
+When the model calls `write_file`, the content is rendered as a
+syntax-highlighted code panel (lexer auto-detected from extension).
+This is the centerpiece of the live view — you watch the code being
+written.
+
+<p align="center">
+  <img src="./assets/live-view-file-write.svg" alt="Live view — write_file code panel" width="100%" />
+</p>
+
+### Finished state
+
+When the agent produces its final answer, the dashboard shows
+`status=done` (green) and a `✓ done` marker with finish reason + total
+tool-call count. The dashboard then disappears (via `transient=True`)
+and only the final answer prints to stdout.
+
+<p align="center">
+  <img src="./assets/live-view-done.svg" alt="Live view — done" width="100%" />
+</p>
+
+## ASCII preview
+
+If your terminal can't render SVGs, you can preview the dashboard with
+the raw ANSI text:
+
+```bash
+cat docs/assets/live-view-ansi.txt
 ```
-┌── header: gemini-py · model=gemini-3.8-flash · iter 1/25 · tools=0 · status=thinking… ──┐
-│ body:    streaming transcript (re-rendered 12x/sec):                                   │
-│           ── iteration 1/25 ──                                                          │
-│           (model thinking in dim italic, accumulates as text streams in)                 │
-│           → call run_shell_command {command='ls'}                                      │
-│           ← run_shell_command  file1.txt file2.txt                                     │
-│           ┌─ write_file → app.py  (5 lines, 120 chars) ──────────────────────────────┐ │
-│           │ 1  from flask import Flask                                                 │ │
-│           │ 2  app = Flask(__name__)                                                  │ │
-│           │ ...                                                                       │ │
-│           └───────────────────────────────────────────────────────────────────────────┘ │
-│           ← write_file  OK: wrote 120 chars to app.py                                    │
-│           ✓ done  (finish=STOP, tool_calls=2)                                           │
-├── footer: ● working…  (Ctrl+C to abort) ───────────────────────────────────────────────┤
-└──────────────────────────────────────────────────────────────────────────────────────────┘
-```
+
+This is the actual ANSI escape sequence output the live view would
+produce in a real terminal.
 
 ## Quick start
 

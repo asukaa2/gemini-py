@@ -21,7 +21,7 @@ from gemini_py import __version__
 
 
 def test_version():
-    assert __version__ == "0.6.2"
+    assert __version__ == "0.6.3"
 
 
 def test_model_alias_resolves():

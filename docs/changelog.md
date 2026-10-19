@@ -3,6 +3,26 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.3] — 2026-10-19
+
+### Added
+- `docs/assets/` folder with SVG screenshots of the live view dashboard:
+  - `live-view-thinking.svg` — mid-generation state
+  - `live-view-tool-call.svg` — tool call in progress
+  - `live-view-tool-result.svg` — tool result received
+  - `live-view-file-write.svg` — write_file code panel with syntax highlighting
+  - `live-view-done.svg` — finished state
+  - `live-view-ansi.txt` — raw ANSI text for terminal preview
+- `scripts/generate_live_view_screenshots.py` — reproducible script that
+  builds 5 dashboard scenarios and exports them as SVG via
+  `rich.console.Console.export_svg()`. Run with
+  `python scripts/generate_live_view_screenshots.py`.
+- `docs/live-view.md` now embeds all 5 screenshots in dedicated sections
+  at the top of the doc, with descriptive captions.
+
+### Changed
+- Bumped version to 0.6.3.
+
 ## [0.6.2] — 2026-10-19
 
 ### Fixed

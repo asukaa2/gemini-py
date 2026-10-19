@@ -33,7 +33,7 @@ from .providers.custom import CustomProvider
 from .sessions import SessionStore, SessionRecord
 from .output import OutputFormat, format_result
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 __all__ = [
     "GeminiClient",
     "AuthConfig",

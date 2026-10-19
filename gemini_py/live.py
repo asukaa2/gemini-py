@@ -338,9 +338,13 @@ class RichLiveChat:
         # Pending thinking text accumulator (so we don't create one Text per chunk).
         self._pending_thinking: Optional[Any] = None
 
-        # The Live display. We pass a callable so it re-renders on each refresh.
+        # The Live display. We pass an INITIAL renderable (not a callable —
+        # some rich versions don't auto-call bound methods) and call
+        # live.update(self._render()) on each emit() to push fresh state.
+        # refresh_per_second controls the auto-refresh rate of whatever
+        # renderable is currently set.
         self.live = Live(
-            self._render,
+            self._render(),
             console=self.console,
             refresh_per_second=self.REFRESH_PER_SECOND,
             transient=False,
@@ -351,8 +355,8 @@ class RichLiveChat:
     # --- Public API --------------------------------------------------------
 
     def emit(self, event: Dict[str, Any]) -> None:
-        """Update internal state from an event. The Live display will
-        re-render on the next refresh tick (no need to call update()).
+        """Update internal state from an event and push a fresh renderable
+        to the Live display.
         """
         etype = event.get("type")
         if etype == "iteration":
@@ -369,6 +373,13 @@ class RichLiveChat:
             self._on_done(event)
         elif etype == "error":
             self._on_error(event)
+        # Push the freshly-rendered dashboard to Live. This is the fix for
+        # the NotRenderableError — passing a bound method to Live doesn't
+        # work in all rich versions, so we update() with the rendered object.
+        try:
+            self.live.update(self._render())
+        except Exception:
+            pass
 
     def close(self) -> None:
         """Stop the Live display. Final answer should be printed AFTER this."""

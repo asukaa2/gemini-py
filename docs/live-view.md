@@ -110,7 +110,13 @@ Theme: `monokai` with line numbers and word-wrap.
 The dashboard is built with:
 
 - [`rich.live.Live`](https://rich.readthedocs.io/en/stable/live.html)
-  with `refresh_per_second=12` — the display re-renders 12x per second.
+  with `refresh_per_second=12` + `screen=True` + `transient=True`.
+- **`screen=True`** enters the terminal's **alt-screen buffer** — the
+  dashboard fills the screen and updates IN PLACE (like vim / less /
+  gemini-cli's TUI). No scrolling, no flicker, no "muncul mulu".
+- **`transient=True`** clears the dashboard when the agent finishes —
+  only the final answer prints to stdout, with no leftover dashboard
+  above it.
 - [`rich.layout.Layout`](https://rich.readthedocs.io/en/stable/layout.html)
   — three-row column split (header / body / footer).
 - [`rich.panel.Panel`](https://rich.readthedocs.io/en/stable/panel.html)

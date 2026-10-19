@@ -75,6 +75,34 @@ The CLI resolves the prompt in this order:
 | `--top-p` | `0.95` | Top-p nucleus sampling. |
 | `--system-prompt` | — | Override the system prompt. Use `-` to read from stdin. |
 
+## Provider selection (v0.6.0+)
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--provider` | `gemini` | LLM backend. One of: `gemini`, `openai`, `anthropic`, `ollama`, `transformers`, `custom`. |
+| `--provider-model` | — | Model name for the chosen provider. See [Providers](./providers.md) for examples. |
+| `--provider-base-url` | — | Override the provider's base URL. For OpenAI-compatible APIs (DeepSeek, Together, Groq, vLLM, LM Studio). |
+| `--api-key` | — | API key for the chosen provider. Falls back to env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). |
+
+Non-Gemini providers run in text-only mode EXCEPT Transformers (which
+supports function-calling via output-text parsing since v0.6.1). See
+[Providers](./providers.md) for details.
+
+```bash
+# Default (Gemini)
+gemini-py -p "Hello"
+
+# OpenAI
+gemini-py -p "Hello" --provider openai --provider-model gpt-4o-mini --api-key sk-...
+
+# Local Ollama
+gemini-py -p "Hello" --provider ollama --provider-model llama3.2
+
+# Local Transformers (with function-calling support)
+gemini-py -p "List Python files" --provider transformers \
+  --provider-model Qwen/Qwen2.5-1.5B-Instruct --live
+```
+
 ## Subcommands
 
 Subcommands are detected BEFORE the main parser runs (so the positional

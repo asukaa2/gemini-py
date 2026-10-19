@@ -338,8 +338,20 @@ class RichLiveChat:
         # Pending thinking text accumulator (so we don't create one Text per chunk).
         self._pending_thinking: Optional[Any] = None
 
-        # The Live display. We pass an INITIAL renderable (not a callable —
-        # some rich versions don't auto-call bound methods) and call
+        # The Live display.
+        #
+        # screen=True   — use the terminal's alt-screen buffer so the
+        #                 dashboard fills the screen and updates IN
+        #                 PLACE (like vim / less / gemini-cli's TUI).
+        #                 No scrolling, no flicker, no "muncul mulu".
+        #
+        # transient=True — when close() is called, the dashboard is
+        #                  cleared from the terminal entirely. The final
+        #                  answer then prints to stdout cleanly, with no
+        #                  leftover dashboard above it.
+        #
+        # We pass an INITIAL renderable (not a callable — some rich
+        # versions don't auto-call bound methods) and call
         # live.update(self._render()) on each emit() to push fresh state.
         # refresh_per_second controls the auto-refresh rate of whatever
         # renderable is currently set.
@@ -347,8 +359,8 @@ class RichLiveChat:
             self._render(),
             console=self.console,
             refresh_per_second=self.REFRESH_PER_SECOND,
-            transient=False,
-            screen=False,  # don't grab alt-screen — let it scroll
+            transient=True,
+            screen=True,
         )
         self.live.start()
 

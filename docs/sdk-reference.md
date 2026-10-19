@@ -370,7 +370,111 @@ class LoginResult:
 Raised by `login()` and `logout()` on bad input (empty key, missing
 project for Vertex, unknown scope/method, etc.).
 
-## Submodules
+## Providers (v0.6.0+)
+
+The SDK supports multiple LLM providers via the `Provider` abstraction.
+See [Providers](./providers.md) for the full guide.
+
+### `Provider` (ABC)
+
+Abstract base class. Subclass it to write a custom adapter:
+
+```python
+from gemini_py.providers import Provider
+
+class MyProvider(Provider):
+    def generate_content(self, *, model, contents, config):
+        # Build a response-shaped object (see gemini_py/_response.py).
+        ...
+    def generate_content_stream(self, *, model, contents, config):
+        # Yield response chunks.
+        ...
+    def list_models(self):
+        return ["my-model-1", "my-model-2"]
+    def supports_tools(self) -> bool:
+        return False  # text-only mode
+    @property
+    def name(self) -> str:
+        return "my-provider"
+```
+
+### `make_provider(name, *, api_key=None, base_url=None, model=None, auth=None) -> Provider`
+
+Factory function for the built-in providers:
+
+```python
+from gemini_py.providers import make_provider
+
+provider = make_provider("ollama", model="llama3.2")
+client = GeminiClient(provider=provider)
+```
+
+Names: `gemini` (default), `openai`, `anthropic`, `ollama`,
+`transformers`. (`custom` requires direct construction — call
+`CustomProvider(generate_fn=...)`.)
+
+### Built-in provider classes
+
+| Class | Backend | Tools? | Extra deps |
+| --- | --- | --- | --- |
+| `GeminiProvider` | `google.genai.Client` | ✅ | `google-genai` |
+| `OpenAIProvider` | `openai` SDK | ❌ | `pip install openai` |
+| `AnthropicProvider` | `anthropic` SDK | ❌ | `pip install anthropic` |
+| `OllamaProvider` | HTTP to local server | ❌ | none |
+| `TransformersProvider` | HuggingFace transformers | ✅ (parses markers) | `pip install transformers torch` |
+| `CustomProvider` | user-supplied callable | ❌ | none |
+
+### `GeminiClient(provider=...)`
+
+Accepts:
+- `None` (default) → builds a `GeminiProvider` from `AuthConfig.from_env()`.
+- A provider name string: `"gemini" | "openai" | "anthropic" | "ollama" | "transformers"`.
+- A `Provider` instance directly.
+
+```python
+# Default (Gemini)
+client = GeminiClient()
+
+# By name
+client = GeminiClient(provider="ollama")
+
+# By instance
+from gemini_py import OllamaProvider
+client = GeminiClient(provider=OllamaProvider(default_model="llama3.2"))
+```
+
+### `CustomProvider` (text-only, callable-based)
+
+```python
+from gemini_py.providers.custom import CustomProvider
+
+def my_generate(prompt: str, *, model: str, **config) -> str:
+    return f"[{model}] Echo: {prompt}"
+
+provider = CustomProvider(
+    generate_fn=my_generate,
+    models=["my-model"],
+    name="echo",
+)
+client = GeminiClient(provider=provider)
+print(client.generate_text("Hello").text)
+```
+
+Streaming variant: pass `stream_fn` instead of (or in addition to)
+`generate_fn`. The callable receives the user's last message text
+(extracted from the conversation history).
+
+### Response-shape helpers (`gemini_py._response`)
+
+Provider adapters use these to build response objects:
+
+- `text_response(text, usage=...)` — build a non-streaming text response.
+- `text_chunk(text)` — build a streaming chunk carrying incremental text.
+- `text_with_tool_calls_response(text, tool_calls, usage=..., raw=...)` —
+  build a response carrying both leftover text + `_FunctionCallPart`s
+  for each parsed tool call (used by TransformersProvider).
+
+### Submodules
 
 The package also exposes these submodules for advanced use:
 

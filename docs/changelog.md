@@ -3,6 +3,25 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] — 2026-10-19
+
+### Fixed
+- `RichLiveChat` now uses `screen=True` (alt-screen buffer) +
+  `transient=True`. The dashboard fills the terminal and updates IN
+  PLACE (like vim / less / gemini-cli's TUI) — no scrolling, no
+  flicker, no "muncul mulu" repeating renders. When the agent
+  finishes, the dashboard disappears entirely and only the final
+  answer prints to stdout.
+
+### Changed
+- `docs/live-view.md` updated to document the new `screen=True` mode.
+- `docs/cli-reference.md` gained a "Provider selection" section with
+  `--provider`, `--provider-model`, `--provider-base-url`, `--api-key`.
+- `docs/sdk-reference.md` gained a "Providers" section documenting
+  `Provider` ABC, `make_provider()`, all built-in provider classes,
+  `GeminiClient(provider=...)`, and `CustomProvider` usage.
+- Bumped version to 0.6.2.
+
 ## [0.6.1] — 2026-10-19
 
 ### Added

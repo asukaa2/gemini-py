@@ -198,6 +198,10 @@ class GeminiClient:
         enable_subagent: bool = True,
         mcp_client: Optional[Any] = None,
         skills_loader: Optional[Any] = None,
+        # Live view: stream text chunks + tool calls + tool results in real
+        # time. The on_event callback gets fed every event (text_chunk,
+        # tool_call, tool_result, iteration, done, error, file_write).
+        live: bool = False,
     ) -> GenerateResult:
         """Run a single agent turn with tool-calling.
 
@@ -214,6 +218,9 @@ class GeminiClient:
             - **Subagent**: the `delegate_subagent(skill, task)` tool is
               exposed so the model can spawn a focused subagent (set
               `enable_subagent=False` to skip).
+            - **Live view**: when `live=True`, stream text chunks + tool
+              calls + tool results to `on_event` in real-time. Use the
+              `LiveView` class from `.live` for a rich stderr renderer.
             - **MCP**: pass an `mcp_client` (already `.start()`-ed) to
               expose its tools alongside the built-in ones.
 
@@ -316,14 +323,27 @@ class GeminiClient:
         last_text_chunk: str = ""
 
         for iteration in range(max_iterations):
-            try:
-                response = self._client.models.generate_content(
+            if on_event:
+                on_event({"type": "iteration", "n": iteration + 1, "max": max_iterations})
+
+            if live:
+                # Streaming path: emit text chunks in real time, then
+                # collect function calls from the final accumulated state.
+                response = self._stream_and_collect(
                     model=model,
                     contents=contents,
                     config=gen_cfg,
+                    on_event=on_event,
                 )
-            except Exception as e:
-                raise GeminiError(f"agent iteration failed: {e}") from e
+            else:
+                try:
+                    response = self._client.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=gen_cfg,
+                    )
+                except Exception as e:
+                    raise GeminiError(f"agent iteration failed: {e}") from e
 
             # Extract any function calls. We preserve the ORIGINAL Part
             # objects so we can pass them back to the API unchanged — the
@@ -365,6 +385,16 @@ class GeminiClient:
             if not function_calls:
                 # No tool calls — this is the final answer.
                 usage = UsageStats.from_metadata(getattr(response, "usage_metadata", None))
+                if on_event:
+                    on_event(
+                        {
+                            "type": "done",
+                            "finish_reason": str(
+                                getattr(candidates[0], "finish_reason", "") if candidates else ""
+                            ),
+                            "n_tool_calls": len(tool_results),
+                        }
+                    )
                 return GenerateResult(
                     text="\n".join(text_parts),
                     usage=usage,
@@ -402,6 +432,14 @@ class GeminiClient:
                     f"{', '.join(fp.split(':', 1)[0] for fp in looped)}.]"
                 )
                 usage = UsageStats.from_metadata(getattr(response, "usage_metadata", None))
+                if on_event:
+                    on_event(
+                        {
+                            "type": "done",
+                            "finish_reason": "loop_detected",
+                            "n_tool_calls": len(tool_results),
+                        }
+                    )
                 return GenerateResult(
                     text="\n".join(summary_lines),
                     usage=usage,
@@ -423,6 +461,16 @@ class GeminiClient:
             # Execute each function call and append responses.
             response_parts = []
             for fc in function_calls:
+                # Special-case write_file: emit a file_write event so the
+                # live view can render the code being written.
+                if on_event and fc["name"] == "write_file":
+                    on_event(
+                        {
+                            "type": "file_write",
+                            "path": fc["args"].get("path", "?"),
+                            "content": fc["args"].get("content", ""),
+                        }
+                    )
                 if on_event:
                     on_event({"type": "tool_call", "name": fc["name"], "args": fc["args"]})
                 result = self._dispatch_tool_call(
@@ -452,6 +500,13 @@ class GeminiClient:
 
         # Exceeded iterations without a final answer.
         # Provide a helpful diagnostic so the user knows what to tune.
+        if on_event:
+            on_event(
+                {
+                    "type": "error",
+                    "message": f"max_iterations ({max_iterations}) reached without a final answer",
+                }
+            )
         return GenerateResult(
             text=(
                 f"(agent hit the max-iterations limit of {max_iterations} "
@@ -466,6 +521,73 @@ class GeminiClient:
             model=model,
             finish_reason="max_iterations_reached",
             tool_results=tool_results,
+        )
+
+    def _stream_and_collect(
+        self,
+        *,
+        model: str,
+        contents: List[Dict[str, Any]],
+        config: Dict[str, Any],
+        on_event: Optional[Any] = None,
+    ) -> Any:
+        """Stream a generate_content call and accumulate chunks.
+
+        Emits each chunk's text via on_event as `text_chunk` events for
+        live view. Returns a synthesized response object with all parts
+        (text + function_call) accumulated from the chunks.
+
+        We can't simply return the last chunk because text and
+        function_calls may be split across multiple chunks.
+        """
+        try:
+            stream = self._client.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            raise GeminiError(f"streaming iteration failed: {e}") from e
+
+        accumulated_text_parts: List[str] = []
+        accumulated_parts: List[Any] = []  # original Part objects
+        last_response: Any = None
+        last_usage: Any = None
+
+        try:
+            for chunk in stream:
+                last_response = chunk
+                # Capture usage_metadata (typically on the last chunk).
+                um = getattr(chunk, "usage_metadata", None)
+                if um is not None:
+                    last_usage = um
+                candidates = getattr(chunk, "candidates", []) or []
+                for cand in candidates:
+                    content = getattr(cand, "content", None)
+                    if content is None:
+                        continue
+                    parts = getattr(content, "parts", []) or []
+                    for part in parts:
+                        t = getattr(part, "text", None)
+                        if t:
+                            accumulated_text_parts.append(t)
+                            if on_event:
+                                on_event({"type": "text_chunk", "text": t})
+                        # Preserve original Part for function_call (carries
+                        # thought_signature).
+                        fc = getattr(part, "function_call", None)
+                        if fc:
+                            accumulated_parts.append(part)
+        except Exception as e:
+            raise GeminiError(f"streaming iteration failed: {e}") from e
+
+        # Build a synthesized response object that quacks like the non-stream
+        # response: has .candidates[0].content.parts[] and .usage_metadata.
+        return _StreamedResponse(
+            parts=accumulated_parts,
+            text="".join(accumulated_text_parts),
+            usage_metadata=last_usage,
+            raw=last_response,
         )
 
     # --- Tool dispatch (built-in + MCP + subagent) -----------------------
@@ -699,6 +821,54 @@ def _build_subagent_tool(skills_loader: Optional[Any]) -> Optional[Tool]:
 # Module-level singleton reference to the last-constructed GeminiClient.
 # Used by the subagent tool to spawn a child turn without re-auth.
 _LAST_CLIENT_REF: List[Any] = [None]
+
+
+class _StreamedResponse:
+    """A minimal response-shaped object that quacks like the non-streaming
+    `GenerateContentResponse`.
+
+    The agent loop accesses `response.candidates[].content.parts[]` and
+    `response.usage_metadata`. When we use `generate_content_stream`,
+    we get chunks; we accumulate the parts ourselves and wrap them in
+    this object so the rest of the loop is unchanged.
+    """
+
+    def __init__(self, parts: List[Any], text: str, usage_metadata: Any, raw: Any) -> None:
+        # Build a candidate with content.parts = parts.
+        # If we have no parts at all (e.g. model refused), synthesize an
+        # empty text part so the loop's text extraction still works.
+        if not parts and text:
+            parts = [_TextPart(text)]
+        candidate = _Candidate(_Content(parts))
+        self.candidates = [candidate]
+        self.text = text  # convenience: full text
+        self.usage_metadata = usage_metadata
+        self.raw = raw
+
+
+class _Candidate:
+    __slots__ = ("content", "finish_reason")
+
+    def __init__(self, content: "_Content") -> None:
+        self.content = content
+        self.finish_reason = ""  # streaming chunks usually don't carry this
+
+
+class _Content:
+    __slots__ = ("parts",)
+
+    def __init__(self, parts: List[Any]) -> None:
+        self.parts = parts
+
+
+class _TextPart:
+    """Fallback Part-like for synthesizing text-only responses."""
+
+    __slots__ = ("text", "function_call")
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.function_call = None
 
 
 def run_headless(prompt: str, **kwargs) -> GenerateResult:

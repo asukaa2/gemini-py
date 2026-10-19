@@ -113,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-tools", action="store_true", help="Disable built-in tools (text-only).")
     parser.add_argument("--no-shell", action="store_true", help="Disable the shell tool only.")
     parser.add_argument("--enable-web", action="store_true", help="Enable web_search and web_fetch tools.")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Live view: stream the model's thinking + tool calls + tool results to stderr in real-time.",
+    )
     parser.add_argument("--no-memory", action="store_true", help="Disable hierarchical GEMINI.md auto-memory.")
     parser.add_argument("--no-skills", action="store_true", help="Disable @skill_name expansion and skill listing.")
     parser.add_argument("--no-subagent", action="store_true", help="Disable the delegate_subagent tool.")
@@ -378,6 +383,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         try:
             # Regular non-stream run
+            live_view = None
+            if args.live:
+                try:
+                    from .live import make_default_live_view
+                    live_view = make_default_live_view(enabled=True)
+                except Exception:
+                    live_view = None
             result = client.run_agent_turn(
                 prompt,
                 tools=tools,
@@ -387,7 +399,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 enable_skills=not args.no_skills,
                 enable_subagent=not args.no_subagent,
                 mcp_client=mcp_client,
+                live=args.live,
+                on_event=(live_view.emit if live_view else None),
             )
+            if live_view:
+                # The "done" event is emitted inside run_agent_turn; just
+                # make sure we end any pending thinking block.
+                pass
         finally:
             if mcp_client is not None:
                 try:

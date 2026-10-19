@@ -140,12 +140,38 @@ def _t_write_file() -> Tool:
 
     return Tool(
         name="write_file",
-        description="Write content to a file, overwriting if it exists.",
+        description="Write content to a file, overwriting if it exists. Parent directories are auto-created.",
         parameters={
             "path": {"type": "string", "description": "File path to write.", "required": True},
             "content": {
                 "type": "string",
                 "description": "Full text content to write.",
+                "required": True,
+            },
+        },
+        executor=_exec,
+    )
+
+
+def _t_create_directory() -> Tool:
+    def _exec(path: str, **_):
+        p = _safe_path(path)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            return f"OK: directory ready at {p}"
+        except Exception as e:
+            return f"Error creating directory {p}: {e}"
+
+    return Tool(
+        name="create_directory",
+        description=(
+            "Create a directory (and any missing parents). Use this to "
+            "scaffold a project folder before writing files into it."
+        ),
+        parameters={
+            "path": {
+                "type": "string",
+                "description": "Directory path to create.",
                 "required": True,
             },
         },
@@ -282,7 +308,13 @@ def build_default_tools(
     tools: List[Tool] = []
     if enable_filesystem:
         tools.extend(
-            [_t_list_directory(), _t_read_file(), _t_write_file(), _t_grep_search()]
+            [
+                _t_list_directory(),
+                _t_read_file(),
+                _t_write_file(),
+                _t_create_directory(),
+                _t_grep_search(),
+            ]
         )
     if enable_shell:
         tools.append(_t_run_shell())

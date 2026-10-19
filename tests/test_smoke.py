@@ -21,7 +21,7 @@ from gemini_py import __version__
 
 
 def test_version():
-    assert __version__ == "0.4.1"
+    assert __version__ == "0.5.0"
 
 
 def test_model_alias_resolves():
@@ -125,6 +125,7 @@ def test_tools_registry_contains_expected():
     assert "list_directory" in names
     assert "read_file" in names
     assert "write_file" in names
+    assert "create_directory" in names
     assert "grep_search" in names
     assert "run_shell_command" in names
     assert "web_search" in names

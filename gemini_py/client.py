@@ -34,11 +34,15 @@ class GeminiError(Exception):
 
 
 class GeminiClient:
-    """High-level client for Google Gemini.
+    """High-level client for Gemini (and other providers).
 
     Args:
-        auth: Authentication configuration. Defaults to `AuthConfig.from_env()`.
+        auth: Authentication configuration (Gemini only). Defaults to
+            `AuthConfig.from_env()` when `provider` is None or "gemini".
         config: Generation config. Defaults to a sensible `GeminiConfig()`.
+        provider: A `Provider` instance, a provider name string
+            ("gemini" | "openai" | "anthropic" | "ollama" | "transformers"),
+            or None (default: build a GeminiProvider from `auth`).
 
     Example:
         >>> from gemini_py import GeminiClient
@@ -46,25 +50,52 @@ class GeminiClient:
         >>> r = client.generate_text("Say hello.")
         >>> print(r.text)
         'Hello! How can I help you today?'
+
+        >>> # Use Ollama instead:
+        >>> from gemini_py.providers import make_provider
+        >>> provider = make_provider("ollama", model="llama3.2")
+        >>> client = GeminiClient(provider=provider)
+        >>> print(client.generate_text("Hello").text)
     """
 
     def __init__(
         self,
         auth: Optional[AuthConfig] = None,
         config: Optional[GeminiConfig] = None,
+        provider: Optional[Any] = None,
     ) -> None:
-        self.auth = auth or AuthConfig.from_env()
         self.config = config or GeminiConfig()
-        self._client = self._build_underlying_client()
+        # Resolve provider.
+        if provider is None:
+            # Default: Gemini with the user's auth.
+            self.auth = auth or AuthConfig.from_env()
+            from .providers.gemini import GeminiProvider
+            self._provider = GeminiProvider(auth=self.auth)
+        elif isinstance(provider, str):
+            # Provider name — use factory.
+            self.auth = auth
+            from .providers import make_provider
+            self._provider = make_provider(provider, auth=auth)
+        else:
+            # Provider instance.
+            self.auth = auth
+            self._provider = provider
+        # Backward-compat: expose self._client as the provider (some
+        # external code may have used `client._client.models.generate_content`).
+        self._client = self._provider
         # Register this instance as the "last client" so the subagent tool
         # (which is built lazily inside run_agent_turn) can spawn a child turn
-        # using the same auth + config.
+        # using the same auth + config + provider.
         _LAST_CLIENT_REF[0] = self
 
-    # --- Construction -----------------------------------------------------
+    # --- Construction (legacy, kept for backward compat) ------------------
 
     def _build_underlying_client(self):
-        """Build the underlying `google.genai.Client` from the auth config."""
+        """Legacy: build a `google.genai.Client` directly.
+
+        Kept for backward compat with code that called this method directly.
+        New code should use `GeminiClient(provider=...)` instead.
+        """
         try:
             from google import genai  # type: ignore
         except ImportError as exc:
@@ -112,7 +143,7 @@ class GeminiClient:
         model = cfg.resolve_model()
 
         try:
-            response = self._client.models.generate_content(
+            response = self._provider.generate_content(
                 model=model,
                 contents=prompt,
                 config=gen_cfg,
@@ -143,7 +174,7 @@ class GeminiClient:
 
         contents = [m.to_dict() for m in messages]
         try:
-            response = self._client.models.generate_content(
+            response = self._provider.generate_content(
                 model=model,
                 contents=contents,
                 config=gen_cfg,
@@ -169,7 +200,7 @@ class GeminiClient:
         gen_cfg = cfg.to_generate_content_config()
         model = cfg.resolve_model()
         try:
-            stream = self._client.models.generate_content_stream(
+            stream = self._provider.generate_content_stream(
                 model=model,
                 contents=prompt,
                 config=gen_cfg,
@@ -246,6 +277,22 @@ class GeminiClient:
             enable_filesystem=cfg.enable_filesystem_tools,
             enable_web=cfg.enable_web_search or cfg.enable_web_fetch,
         )
+
+        # Check provider's tool support. Non-Gemini providers don't yet
+        # support function-calling, so the agent loop would loop forever
+        # waiting for tool calls. Auto-disable tools + warn the user.
+        provider_supports_tools = True
+        try:
+            provider_supports_tools = self._provider.supports_tools()
+        except Exception:
+            provider_supports_tools = True
+        if not provider_supports_tools and tools:
+            import sys as _sys
+            _sys.stderr.write(
+                f"[gemini-py] provider '{self._provider.name}' does not support "
+                f"function-calling — disabling tools for this turn (text-only mode).\n"
+            )
+            tools = []
 
         # --- Skills loader (lazy init) ---------------------------------
         if skills_loader is None and enable_skills:
@@ -337,7 +384,7 @@ class GeminiClient:
                 )
             else:
                 try:
-                    response = self._client.models.generate_content(
+                    response = self._provider.generate_content(
                         model=model,
                         contents=contents,
                         config=gen_cfg,
@@ -541,7 +588,7 @@ class GeminiClient:
         function_calls may be split across multiple chunks.
         """
         try:
-            stream = self._client.models.generate_content_stream(
+            stream = self._provider.generate_content_stream(
                 model=model,
                 contents=contents,
                 config=config,
@@ -822,53 +869,19 @@ def _build_subagent_tool(skills_loader: Optional[Any]) -> Optional[Tool]:
 # Used by the subagent tool to spawn a child turn without re-auth.
 _LAST_CLIENT_REF: List[Any] = [None]
 
-
-class _StreamedResponse:
-    """A minimal response-shaped object that quacks like the non-streaming
-    `GenerateContentResponse`.
-
-    The agent loop accesses `response.candidates[].content.parts[]` and
-    `response.usage_metadata`. When we use `generate_content_stream`,
-    we get chunks; we accumulate the parts ourselves and wrap them in
-    this object so the rest of the loop is unchanged.
-    """
-
-    def __init__(self, parts: List[Any], text: str, usage_metadata: Any, raw: Any) -> None:
-        # Build a candidate with content.parts = parts.
-        # If we have no parts at all (e.g. model refused), synthesize an
-        # empty text part so the loop's text extraction still works.
-        if not parts and text:
-            parts = [_TextPart(text)]
-        candidate = _Candidate(_Content(parts))
-        self.candidates = [candidate]
-        self.text = text  # convenience: full text
-        self.usage_metadata = usage_metadata
-        self.raw = raw
-
-
-class _Candidate:
-    __slots__ = ("content", "finish_reason")
-
-    def __init__(self, content: "_Content") -> None:
-        self.content = content
-        self.finish_reason = ""  # streaming chunks usually don't carry this
-
-
-class _Content:
-    __slots__ = ("parts",)
-
-    def __init__(self, parts: List[Any]) -> None:
-        self.parts = parts
-
-
-class _TextPart:
-    """Fallback Part-like for synthesizing text-only responses."""
-
-    __slots__ = ("text", "function_call")
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-        self.function_call = None
+# Response-shape helpers live in gemini_py/_response.py and are imported
+# here so the agent loop can build synthesized responses when streaming.
+from ._response import (  # noqa: E402,F401
+    _StreamedResponse,
+    _Candidate,
+    _Content,
+    _TextPart,
+    _FunctionCall,
+    _FunctionCallPart,
+    _UsageMetadata,
+    text_response,
+    text_chunk,
+)
 
 
 def run_headless(prompt: str, **kwargs) -> GenerateResult:

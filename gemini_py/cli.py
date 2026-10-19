@@ -136,6 +136,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
     parser.add_argument("--top-p", type=float, default=0.95, help="Top-p nucleus sampling.")
 
+    # Provider selection — pick which LLM backend to use.
+    parser.add_argument(
+        "--provider",
+        default="gemini",
+        help=(
+            "LLM provider name. One of: gemini (default), openai, anthropic, "
+            "ollama, transformers, custom. Non-gemini providers run in "
+            "text-only mode (no function-calling)."
+        ),
+    )
+    parser.add_argument(
+        "--provider-model",
+        help=(
+            "Model name for the chosen provider. For openai: gpt-4o-mini / "
+            "gpt-4o / o1-mini. For anthropic: claude-3-5-sonnet-20241022. "
+            "For ollama: llama3.2 / qwen2.5-coder / etc. For transformers: "
+            "a HuggingFace repo like HuggingFaceTB/SmolLM2-360M."
+        ),
+    )
+    parser.add_argument(
+        "--provider-base-url",
+        help=(
+            "Override the provider's base URL. For openai: use with OpenAI-"
+            "compatible APIs (DeepSeek, Together, Groq, vLLM, LM Studio). "
+            "For ollama: http://localhost:11434 (default)."
+        ),
+    )
+    parser.add_argument(
+        "--api-key",
+        help=(
+            "API key for the chosen provider. Falls back to env vars: "
+            "OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY."
+        ),
+    )
+
     # NOTE: Subcommands (sessions/extensions/mcp) are handled by a separate
     # parser in `_build_subcommand_parser()`, dispatched from `main()` before
     # this parser runs. This avoids a conflict with the positional `query`
@@ -316,10 +351,31 @@ def main(argv: Optional[List[str]] = None) -> int:
                 sp = ""
         cfg.system_instruction = sp
 
-    # Build client
+    # Build client (with optional provider selection)
     try:
-        client = GeminiClient(config=cfg)
+        provider = None
+        if args.provider and args.provider != "gemini":
+            # Use the factory for non-Gemini providers.
+            from .providers import make_provider
+            provider = make_provider(
+                args.provider,
+                api_key=args.api_key,
+                base_url=args.provider_base_url,
+                model=args.provider_model,
+            )
+        elif args.provider_model and args.provider == "gemini":
+            # For Gemini, --provider-model acts as the model name (overrides -m).
+            # Already handled by --model above if user passed both.
+            pass
+        client = GeminiClient(config=cfg, provider=provider)
     except GeminiError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        # Provider construction errors (e.g. missing optional package).
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 

@@ -23,10 +23,17 @@ from .client import GeminiClient
 from .config import GeminiConfig, ModelAlias
 from .login import login, logout, whoami, LoginResult, LoginError
 from .models import GenerateResult, Message, MessageRole, UsageStats
+from .providers import Provider, make_provider
+from .providers.gemini import GeminiProvider
+from .providers.openai import OpenAIProvider
+from .providers.anthropic import AnthropicProvider
+from .providers.ollama import OllamaProvider
+from .providers.transformers import TransformersProvider
+from .providers.custom import CustomProvider
 from .sessions import SessionStore, SessionRecord
 from .output import OutputFormat, format_result
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 __all__ = [
     "GeminiClient",
     "AuthConfig",
@@ -47,6 +54,15 @@ __all__ = [
     "whoami",
     "LoginResult",
     "LoginError",
+    # Providers
+    "Provider",
+    "make_provider",
+    "GeminiProvider",
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "OllamaProvider",
+    "TransformersProvider",
+    "CustomProvider",
 ]
 
 from .client import run_headless

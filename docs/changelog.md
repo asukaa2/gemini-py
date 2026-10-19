@@ -3,6 +3,43 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-10-19
+
+### Added
+- Multi-provider system: pick the LLM backend via `--provider NAME`.
+- `Provider` abstract base class + `make_provider(name, ...)` factory.
+- Built-in providers:
+  - `GeminiProvider` (default) — wraps `google.genai.Client`. Full
+    function-calling / streaming / thought-signature support.
+  - `OpenAIProvider` — uses `openai` Python SDK. Works with any
+    OpenAI-compatible API (DeepSeek, Together, Groq, vLLM, LM Studio)
+    via `--provider-base-url`.
+  - `AnthropicProvider` — uses `anthropic` Python SDK.
+  - `OllamaProvider` — HTTP to local Ollama server. No extra deps.
+  - `TransformersProvider` — runs HuggingFace models locally. Lazy-loaded.
+  - `CustomProvider` — takes a user-supplied callable.
+- `gemini_py/providers/_converters.py` with `contents_to_text`,
+  `extract_user_prompt`, `contents_to_chat_messages`,
+  `contents_to_ollama_messages`.
+- `gemini_py/_response.py` (new module) with the response-shape helper
+  classes (`_StreamedResponse`, `_Candidate`, `_Content`, `_TextPart`,
+  `_FunctionCall`, `_UsageMetadata`, `text_response`, `text_chunk`).
+  Moved from `client.py` so provider adapters can import them without
+  circular deps.
+- New CLI flags: `--provider`, `--provider-model`, `--provider-base-url`,
+  `--api-key`.
+- `GeminiClient(provider=...)` accepts a Provider instance, a name
+  string, or None (default = Gemini).
+- Auto-disable tools when the provider doesn't support function-calling
+  (with a stderr warning).
+- `docs/providers.md` — new doc covering all providers + setup.
+
+### Changed
+- `GeminiClient` now calls `self._provider.generate_content(...)` instead
+  of `self._client.models.generate_content(...)`. The provider protocol
+  is uniform across all backends.
+- Bumped version to 0.6.0.
+
 ## [0.5.1] — 2026-10-19
 
 ### Added

@@ -16,6 +16,7 @@ model lineup (as of October 2026).
 | [Python SDK Reference](./sdk-reference.md) | Public classes and functions |
 | [Authentication](./authentication.md) | `login()`, env vars, `.env` files, Vertex AI |
 | [Models](./models.md) | Model aliases (Oct 2026 lineup) + how to pick |
+| [Providers](./providers.md) | Multi-provider: OpenAI, Anthropic, Ollama, Transformers, custom |
 | [Tools](./tools.md) | Built-in tools, writing custom tools, MCP integration |
 | [Live View](./live-view.md) | The `rich.live.Live` dashboard |
 | [Skills](./skills.md) | `@skill_name` expansion + subagent delegation |

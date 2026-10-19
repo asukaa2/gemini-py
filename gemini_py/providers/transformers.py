@@ -253,17 +253,126 @@ class TransformersProvider(Provider):
             return extract_user_prompt(contents)
 
     def _generate(self, prompt: str, config: Dict[str, Any]) -> str:
-        import torch  # type: ignore
-        max_new = config.get("max_output_tokens", 8192)
-        # Cap to a smaller number for local inference.
-        if max_new > 2048:
-            max_new = 2048
-        temperature = config.get("temperature", 1.0)
-        top_p = config.get("top_p", 0.95)
+        """Generate text with full resilience against OOM / crashes / overflows.
 
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        Handles:
+          - Input too long (truncates to model's max_position_embeddings)
+          - CUDA OOM (falls back to CPU automatically)
+          - Generation crashes (returns error string, doesn't raise —
+            so the agent loop can keep going with what we got)
+          - Decode failures (returns error string)
+          - Max tokens cap respected (generation stops, partial decode)
+
+        Returns the generated text, OR an error string starting with
+        '[generation failed: ...]' / '[tokenize error: ...]' on failures.
+
+        Note: we deliberately DON'T import torch at the top of this
+        method (only inside _call_generate / _move_to_cpu) so tests can
+        mock those methods without needing torch installed.
+        """
+        max_new = int(config.get("max_output_tokens", 8192) or 8192)
+        # Sensible default cap for local inference. We don't override the
+        # user's explicit choice if they want more (or less).
+        if max_new > 8192:
+            max_new = 8192
+        temperature = float(config.get("temperature", 1.0) or 1.0)
+        top_p = float(config.get("top_p", 0.95) or 0.95)
+
+        # 1. Tokenize with truncation (input too long → truncate).
+        try:
+            inputs = self._safe_tokenize(prompt)
+        except Exception as e:
+            sys.stderr.write(
+                f"[gemini-py/transformers] tokenize failed: {e}\n"
+            )
+            return f"[tokenize error: {e}]"
+
+        # 2. Generate with CUDA OOM fallback. We catch generic Exception
+        # and check the message for OOM/CUDA signals (so we don't need to
+        # import torch here just to reference torch.cuda.OutOfMemoryError).
+        outputs = None
+        last_error: Optional[Exception] = None
+        try:
+            outputs = self._call_generate(inputs, max_new, temperature, top_p)
+        except Exception as e:
+            err_msg = str(e).lower()
+            is_oom = (
+                "out of memory" in err_msg
+                or "cuda" in err_msg
+                or "oom" in err_msg
+            )
+            if is_oom:
+                sys.stderr.write(
+                    "[gemini-py/transformers] CUDA OOM, falling back to CPU\n"
+                )
+                try:
+                    self._move_to_cpu()
+                    inputs = self._safe_tokenize(prompt)  # re-tokenize for CPU
+                    outputs = self._call_generate(
+                        inputs, max_new, temperature, top_p
+                    )
+                except Exception as e2:
+                    last_error = e2
+            else:
+                last_error = e
+
+        if outputs is None:
+            # Generation failed entirely — return an error string so the
+            # agent loop can keep going (it'll see this as the model's
+            # response and decide what to do next).
+            sys.stderr.write(
+                f"[gemini-py/transformers] generation failed: {last_error}\n"
+            )
+            return f"[generation failed: {last_error}]"
+
+        # 3. Decode what we got — even if generation was cut short
+        # (max_new_tokens reached, EOS, or partial).
+        try:
+            input_len = inputs["input_ids"].shape[1]
+            generated = outputs[0][input_len:]
+            text = self.tokenizer.decode(generated, skip_special_tokens=True)
+            if not text.strip():
+                # Empty output — model may have hit a limit or refused.
+                return "[no output generated — model may have hit a limit or refused]"
+            return text
+        except Exception as e:
+            sys.stderr.write(
+                f"[gemini-py/transformers] decode failed: {e}\n"
+            )
+            return f"[decode error: {e}]"
+
+    # --- Helpers for resilience -------------------------------------------
+
+    def _get_max_input_tokens(self) -> int:
+        """Get the model's max input length from config."""
+        try:
+            n = getattr(self.model.config, "max_position_embeddings", None)
+            if n and isinstance(n, int) and n > 0:
+                return n
+        except Exception:
+            pass
+        # Sensible default — most chat models support at least 4096.
+        return 4096
+
+    def _safe_tokenize(self, prompt: str):
+        """Tokenize, truncating input if it exceeds the model's max length."""
+        max_len = self._get_max_input_tokens()
+        # Reserve room for output tokens (don't fill the entire context
+        # with input — leave at least 1024 for generation).
+        max_input = max(256, max_len - 1024)
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_input,
+        )
+        return inputs.to(self.device)
+
+    def _call_generate(self, inputs, max_new: int, temperature: float, top_p: float):
+        """Call model.generate() — may raise on OOM or other failures."""
+        import torch  # type: ignore
         with torch.no_grad():
-            outputs = self.model.generate(
+            return self.model.generate(
                 **inputs,
                 max_new_tokens=max_new,
                 do_sample=temperature > 0,
@@ -271,8 +380,19 @@ class TransformersProvider(Provider):
                 top_p=top_p,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
-        generated = outputs[0][inputs["input_ids"].shape[1]:]
-        return self.tokenizer.decode(generated, skip_special_tokens=True)
+
+    def _move_to_cpu(self) -> None:
+        """Move the model to CPU (for OOM recovery)."""
+        try:
+            import torch  # type: ignore
+            self.device = "cpu"
+            self.model.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            sys.stderr.write(
+                f"[gemini-py/transformers] CPU fallback failed: {e}\n"
+            )
 
 
 # --- Tool-call parser ------------------------------------------------------

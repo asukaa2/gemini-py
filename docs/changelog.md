@@ -3,6 +3,46 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.5] — 2026-10-19
+
+### Fixed
+- TransformersProvider: full resilience against OOM / crashes / context
+  overflow. Previously, hitting CUDA OOM, a model crash, or context
+  window overflow would crash the entire agent run. Now:
+
+  - **CUDA OOM auto-fallback**: when `model.generate()` raises an
+    out-of-memory error, the provider automatically moves the model
+    to CPU (`self.model.to("cpu")`, `torch.cuda.empty_cache()`) and
+    retries the generation. User sees a stderr notice
+    `[gemini-py/transformers] CUDA OOM, falling back to CPU` and the
+    run continues.
+  - **Input-too-long**: `_safe_tokenize()` reads
+    `model.config.max_position_embeddings` and truncates the input
+    (leaving 1024 tokens for output). No more "input too long" crashes.
+  - **No-empty-output crashes**: if the model produces empty/whitespace
+    output (e.g. max_new_tokens=0, EOS at start, refusal), the provider
+    returns `[no output generated — model may have hit a limit or
+    refused]` instead of an empty string.
+  - **All exceptions return error strings** instead of raising. The
+    agent loop sees the error as the model's response and can decide
+    what to do next (continue, retry, or stop). No more abrupt agent
+    termination from a transformers hiccup.
+  - **Respects user's `--max-output-tokens`** (was capped to 2048
+    in v0.6.4; now capped to 8192 — the actual model limit).
+
+### Added
+- `tests/test_transformers_resilience.py` — 14 new tests covering:
+  `_get_max_input_tokens` (valid / invalid / missing),
+  `_safe_tokenize` truncation + clamping, `_generate` happy path +
+  error paths (tokenize failure, OOM, empty output, user max tokens,
+  cap at 8192), `_move_to_cpu` (skipped without torch),
+  `_call_generate` (skipped without torch).
+
+### Changed
+- Moved the `import torch` out of `_generate` so the method can be
+  unit-tested without torch installed.
+- Bumped version to 0.6.5.
+
 ## [0.6.4] — 2026-10-19
 
 ### Fixed

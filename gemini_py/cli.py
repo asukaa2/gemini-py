@@ -387,7 +387,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.live:
                 try:
                     from .live import make_default_live_view
-                    live_view = make_default_live_view(enabled=True)
+                    live_view = make_default_live_view(
+                        enabled=True,
+                        live=True,
+                        model=cfg.resolve_model(),
+                        max_iterations=args.max_iterations,
+                    )
                 except Exception:
                     live_view = None
             result = client.run_agent_turn(
@@ -403,9 +408,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 on_event=(live_view.emit if live_view else None),
             )
             if live_view:
-                # The "done" event is emitted inside run_agent_turn; just
-                # make sure we end any pending thinking block.
-                pass
+                # Stop the Live dashboard BEFORE printing the final answer,
+                # otherwise the dashboard would overwrite our stdout output.
+                live_view.close()
         finally:
             if mcp_client is not None:
                 try:

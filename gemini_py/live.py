@@ -1,32 +1,45 @@
-"""Live view: stream agent events to stderr in real-time.
+"""Live chat GUI using `rich.live.Live` + `rich.layout.Layout`.
 
-Mirrors gemini-cli's interactive TUI feedback: as the model thinks,
-the user sees the text streaming in; when a tool is called, the call
-name + args are rendered; when a tool returns, the result is shown
-(truncated). For `write_file` calls, the content is rendered with
-syntax highlighting so the user can watch the code being generated.
+Mirrors gemini-cli's interactive TUI: while the agent runs, a dashboard
+renders to the terminal in real-time, split into:
 
-All output goes to **stderr** so stdout stays clean for piping /
-scripting (use `--output-format json` or `stream-json` for that).
+    ┌── header: model · iteration N/M · tool count · status ──┐
+    │ body:   streaming transcript                            │
+    │           - user prompt                                 │
+    │           - model thinking (dim italic)                 │
+    │           - tool_call  (name + args)                    │
+    │           - file_write (code panel with syntax hl)      │
+    │           - tool_result (truncated, color-coded)        │
+    │           - iteration separator                         │
+    ├── footer: hint + progress bar ─────────────────────────┤
+    └─────────────────────────────────────────────────────────┘
 
-Events handled:
-    text_chunk    — incremental text from the model (the "thinking")
-    tool_call     — model is invoking a tool with given args
-    tool_result   — tool returned a result
-    iteration     — agent is starting iteration N of max
-    done          — agent finished
+The dashboard re-renders up to 12x/second via `rich.live.Live`. When
+the agent finishes, the Live display is stopped and the final answer
+prints to stdout normally (so piping still works).
+
+Two implementations:
+    - `RichLiveChat`  : full-screen dashboard (requires rich + TTY)
+    - `LiveView`      : simple stderr streaming fallback (no rich / non-TTY)
+
+The factory `make_default_live_view(enabled, live=True)` picks the right
+one based on availability.
 """
 
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+
+# ---------------------------------------------------------------------------
+# Plain-text fallback (no rich required)
+# ---------------------------------------------------------------------------
 
 
 class LiveView:
-    """Print agent events to stderr with optional rich formatting.
-
-    Falls back to plain text if `rich` is unavailable.
+    """Print agent events to stderr (plain text). Fallback when rich is
+    unavailable or stdout is not a TTY.
     """
 
     def __init__(self, use_rich: bool = True, stream=None) -> None:
@@ -38,7 +51,6 @@ class LiveView:
                 from rich.panel import Panel
                 from rich.syntax import Syntax
                 from rich.markdown import Markdown
-                # type: ignore[attr-defined]
                 self._console = Console(
                     file=self._stream, force_terminal=True, soft_wrap=True
                 )
@@ -48,13 +60,9 @@ class LiveView:
                 self._use_rich = True
             except Exception:
                 self._use_rich = False
-        # Track current line so we can prefix thinking text with a marker.
         self._in_thinking = False
 
-    # --- Public API ------------------------------------------------------
-
     def emit(self, event: Dict[str, Any]) -> None:
-        """Emit a single event. Safe to call from any thread."""
         etype = event.get("type")
         if etype == "text_chunk":
             self._on_text_chunk(event.get("text", ""))
@@ -71,14 +79,21 @@ class LiveView:
         elif etype == "error":
             self._on_error(event)
 
-    # --- Event handlers --------------------------------------------------
+    def close(self) -> None:
+        """No-op for the simple view (everything is already on stderr)."""
+        if self._in_thinking:
+            self._write("\n")
+            self._in_thinking = False
+
+    # --- Event handlers (kept short — see commit history for the long form) -
 
     def _on_iteration(self, event: Dict[str, Any]) -> None:
         n = event.get("n", "?")
         mx = event.get("max", "?")
         if self._use_rich:
+            from rich.panel import Panel as _P
             self._console.print(
-                self._Panel(
+                _P(
                     f"[bold cyan]Iteration {n}/{mx}[/]",
                     border_style="cyan",
                     padding=(0, 1),
@@ -86,43 +101,34 @@ class LiveView:
             )
         else:
             self._write(f"\n--- Iteration {n}/{mx} ---\n")
-        # Reset thinking state for the new iteration.
         self._in_thinking = False
 
     def _on_text_chunk(self, text: str) -> None:
         if not text:
             return
         if not self._in_thinking:
-            # Start of a thinking block.
             if self._use_rich:
                 self._console.print("[dim italic]thinking…[/]")
             else:
                 self._write("--- thinking ---\n")
             self._in_thinking = True
         if self._use_rich:
-            # Print without trailing newline so streaming looks live.
             self._console.print(text, end="", soft_wrap=True, highlight=False)
         else:
             self._write(text)
 
     def _on_tool_call(self, event: Dict[str, Any]) -> None:
-        # End any in-progress thinking block.
         if self._in_thinking:
             if self._use_rich:
-                self._console.print("")  # newline
+                self._console.print("")
             else:
                 self._write("\n")
             self._in_thinking = False
-
         name = event.get("name", "?")
         args = event.get("args", {}) or {}
         if name == "write_file":
-            # Special-case: show as a code panel instead of a one-liner.
-            path = args.get("path", "?")
-            content = args.get("content", "")
-            self._render_file_write(path, content)
+            self._render_file_write(args.get("path", "?"), args.get("content", ""))
             return
-
         args_str = self._format_args(args)
         if self._use_rich:
             self._console.print(
@@ -134,12 +140,10 @@ class LiveView:
     def _on_tool_result(self, event: Dict[str, Any]) -> None:
         name = event.get("name", "?")
         result = event.get("result", "")
-        # Truncate long results.
         is_error = isinstance(result, str) and result.lower().startswith("error")
         max_len = 2000
         truncated = len(result) > max_len
         preview = result[:max_len] + ("…[truncated]" if truncated else "")
-
         if self._use_rich:
             color = "red" if is_error else "green"
             self._console.print(
@@ -153,19 +157,17 @@ class LiveView:
         self._render_file_write(event.get("path", "?"), event.get("content", ""))
 
     def _render_file_write(self, path: str, content: str) -> None:
-        """Render a write_file call as a code panel with syntax highlighting."""
         n_lines = content.count("\n") + 1
         n_chars = len(content)
         header = f"write_file → {path}  ({n_lines} lines, {n_chars} chars)"
-        # Pick lexer by file extension.
         lexer = self._guess_lexer(path)
         if self._use_rich:
             try:
-                syntax = self._Syntax(
-                    content, lexer, theme="monokai", line_numbers=True, word_wrap=True
-                )
+                from rich.syntax import Syntax as _S
+                from rich.panel import Panel as _P
+                syntax = _S(content, lexer, theme="monokai", line_numbers=True, word_wrap=True)
                 self._console.print(
-                    self._Panel(
+                    _P(
                         syntax,
                         title=f"[bold magenta]{header}[/]",
                         border_style="magenta",
@@ -175,7 +177,6 @@ class LiveView:
                 return
             except Exception:
                 pass
-        # Fallback: plain text.
         self._write(f"{header}\n{content}\n")
 
     def _on_done(self, event: Dict[str, Any]) -> None:
@@ -202,12 +203,11 @@ class LiveView:
         else:
             self._write(f"ERROR: {msg}\n")
 
-    # --- Helpers ---------------------------------------------------------
+    # --- Helpers -------------------------------------------------------------
 
     def _format_args(self, args: Dict[str, Any]) -> str:
         if not args:
             return "{}"
-        # Short, single-line representation.
         parts = []
         for k, v in args.items():
             v_str = repr(v) if isinstance(v, str) else str(v)
@@ -217,7 +217,6 @@ class LiveView:
         return "{" + ", ".join(parts) + "}"
 
     def _guess_lexer(self, path: str) -> str:
-        """Map a file extension to a rich Syntax lexer name."""
         lower = path.lower()
         if lower.endswith((".py", ".pyw")):
             return "python"
@@ -261,7 +260,7 @@ class LiveView:
             return "xml"
         if lower.endswith((".ini", ".cfg")):
             return "ini"
-        if lower.endswith((".env",)):
+        if lower.endswith(".env"):
             return "bash"
         if lower.endswith("dockerfile") or lower.endswith(".dockerfile"):
             return "docker"
@@ -275,8 +274,389 @@ class LiveView:
             pass
 
 
-def make_default_live_view(enabled: bool) -> Optional[LiveView]:
-    """Construct a LiveView if enabled, else None (events get dropped)."""
+# ---------------------------------------------------------------------------
+# Full-screen dashboard using rich.live.Live
+# ---------------------------------------------------------------------------
+
+
+class RichLiveChat:
+    """Full-screen chat-style dashboard using `rich.live.Live`.
+
+    Renders a continuously-updating dashboard split into:
+        - header panel (model + iteration + tool count + status)
+        - body panel (streaming transcript)
+        - footer panel (progress hint)
+
+    The dashboard re-renders up to 12x/second. Call `close()` to stop
+    the Live display when the agent finishes.
+    """
+
+    REFRESH_PER_SECOND = 12
+
+    def __init__(self, model: str = "", max_iterations: int = 0) -> None:
+        try:
+            from rich.console import Console
+            from rich.live import Live
+            from rich.layout import Layout
+            from rich.panel import Panel
+            from rich.text import Text
+            from rich.table import Table
+            from rich.syntax import Syntax
+            from rich.markdown import Markdown
+            from rich.align import Align
+            from rich.columns import Columns
+            from rich.rule import Rule
+        except ImportError as e:
+            raise RuntimeError(
+                "rich is required for RichLiveChat. pip install rich."
+            ) from e
+
+        self._Layout = Layout
+        self._Panel = Panel
+        self._Text = Text
+        self._Table = Table
+        self._Syntax = Syntax
+        self._Markdown = Markdown
+        self._Align = Align
+        self._Columns = Columns
+        self._Rule = Rule
+
+        self.console = Console(force_terminal=True)
+        # State rendered by the dashboard.
+        self.state: Dict[str, Any] = {
+            "model": model,
+            "iteration": 0,
+            "max": max_iterations,
+            "tool_calls": 0,
+            "status": "starting…",
+            "finish_reason": "",
+            "done": False,
+            "error": None,
+        }
+        # Body lines (each is a renderable or string).
+        self._body_renderables: List[Any] = []
+        # Pending thinking text accumulator (so we don't create one Text per chunk).
+        self._pending_thinking: Optional[Any] = None
+
+        # The Live display. We pass a callable so it re-renders on each refresh.
+        self.live = Live(
+            self._render,
+            console=self.console,
+            refresh_per_second=self.REFRESH_PER_SECOND,
+            transient=False,
+            screen=False,  # don't grab alt-screen — let it scroll
+        )
+        self.live.start()
+
+    # --- Public API --------------------------------------------------------
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        """Update internal state from an event. The Live display will
+        re-render on the next refresh tick (no need to call update()).
+        """
+        etype = event.get("type")
+        if etype == "iteration":
+            self._on_iteration(event)
+        elif etype == "text_chunk":
+            self._on_text_chunk(event.get("text", ""))
+        elif etype == "tool_call":
+            self._on_tool_call(event)
+        elif etype == "file_write":
+            self._on_file_write(event)
+        elif etype == "tool_result":
+            self._on_tool_result(event)
+        elif etype == "done":
+            self._on_done(event)
+        elif etype == "error":
+            self._on_error(event)
+
+    def close(self) -> None:
+        """Stop the Live display. Final answer should be printed AFTER this."""
+        try:
+            self.live.stop()
+        except Exception:
+            pass
+
+    # --- Event handlers ----------------------------------------------------
+
+    def _on_iteration(self, event: Dict[str, Any]) -> None:
+        n = event.get("n", 0)
+        mx = event.get("max", 0)
+        self.state["iteration"] = n
+        self.state["max"] = mx
+        self.state["status"] = "thinking…"
+        self._flush_thinking()
+        self._body_renderables.append(
+            self._Rule(f"iteration {n}/{mx}", style="cyan dim")
+        )
+
+    def _on_text_chunk(self, text: str) -> None:
+        if not text:
+            return
+        # Accumulate into the pending thinking Text to avoid thousands of
+        # tiny Text renderables in the body.
+        if self._pending_thinking is None:
+            self._pending_thinking = self._Text(text, style="dim italic")
+            self._body_renderables.append(self._pending_thinking)
+        else:
+            self._pending_thinking.append(text)
+
+    def _on_tool_call(self, event: Dict[str, Any]) -> None:
+        self._flush_thinking()
+        name = event.get("name", "?")
+        args = event.get("args", {}) or {}
+        self.state["tool_calls"] += 1
+        self.state["status"] = f"calling {name}"
+
+        # Special-case write_file: the file_write event (sent before this
+        # tool_call) already rendered the code panel, so just emit a short
+        # call line here.
+        if name == "write_file":
+            path = args.get("path", "?")
+            line = self._Text.assemble(
+                ("→ ", "bold yellow"),
+                ("call ", "yellow"),
+                (name, "bold"),
+                ("(", "dim"),
+                (f"path={path!r}", "cyan"),
+                (")", "dim"),
+            )
+            self._body_renderables.append(line)
+            return
+
+        args_str = self._format_args(args)
+        line = self._Text.assemble(
+            ("→ ", "bold yellow"),
+            ("call ", "yellow"),
+            (name, "bold"),
+            (" ", "dim"),
+            (args_str, "dim"),
+        )
+        self._body_renderables.append(line)
+
+    def _on_file_write(self, event: Dict[str, Any]) -> None:
+        self._flush_thinking()
+        path = event.get("path", "?")
+        content = event.get("content", "")
+        n_lines = content.count("\n") + 1
+        n_chars = len(content)
+        lexer = self._guess_lexer(path)
+        try:
+            syntax = self._Syntax(
+                content, lexer, theme="monokai", line_numbers=True, word_wrap=True
+            )
+            title = (
+                f"[bold magenta]write_file → {path}  "
+                f"({n_lines} lines, {n_chars} chars)[/]"
+            )
+            self._body_renderables.append(
+                self._Panel(
+                    syntax,
+                    title=title,
+                    border_style="magenta",
+                    padding=(0, 1),
+                )
+            )
+        except Exception:
+            self._body_renderables.append(
+                self._Text(
+                    f"write_file → {path}  ({n_lines} lines, {n_chars} chars)\n{content}",
+                    style="magenta",
+                )
+            )
+
+    def _on_tool_result(self, event: Dict[str, Any]) -> None:
+        self._flush_thinking()
+        name = event.get("name", "?")
+        result = event.get("result", "")
+        is_error = isinstance(result, str) and result.lower().startswith("error")
+        max_len = 1500
+        truncated = len(result) > max_len
+        preview = result[:max_len] + ("…[truncated]" if truncated else "")
+
+        color = "red" if is_error else "green"
+        # Multi-line results get their own panel.
+        if "\n" in preview:
+            try:
+                self._body_renderables.append(
+                    self._Panel(
+                        self._Text(preview, style=color),
+                        title=f"[{color}]← {name}[/]",
+                        border_style=color,
+                        padding=(0, 1),
+                    )
+                )
+                return
+            except Exception:
+                pass
+        # Single-line result.
+        self._body_renderables.append(
+            self._Text.assemble(
+                (f"← {name}  ", f"bold {color}"),
+                (preview, "dim"),
+            )
+        )
+
+    def _on_done(self, event: Dict[str, Any]) -> None:
+        self._flush_thinking()
+        self.state["done"] = True
+        self.state["finish_reason"] = event.get("finish_reason", "")
+        self.state["status"] = "done"
+        self._body_renderables.append(
+            self._Text.assemble(
+                ("✓ ", "bold green"),
+                ("done  ", "bold green"),
+                (
+                    f"(finish={self.state['finish_reason'] or 'n/a'}, "
+                    f"tool_calls={self.state['tool_calls']})",
+                    "dim",
+                ),
+            )
+        )
+
+    def _on_error(self, event: Dict[str, Any]) -> None:
+        self._flush_thinking()
+        msg = event.get("message", "unknown error")
+        self.state["error"] = msg
+        self.state["status"] = "error"
+        self._body_renderables.append(
+            self._Text.assemble(
+                ("✗ error: ", "bold red"),
+                (msg, "red"),
+            )
+        )
+
+    # --- Rendering --------------------------------------------------------
+
+    def _render(self):
+        """Build the full dashboard renderable (called by Live)."""
+        layout = self._Layout()
+        layout.split_column(
+            self._Layout(name="header", size=3),
+            self._Layout(name="body"),
+            self._Layout(name="footer", size=3),
+        )
+        layout["header"].update(self._render_header())
+        layout["body"].update(self._render_body())
+        layout["footer"].update(self._render_footer())
+        return layout
+
+    def _render_header(self):
+        s = self.state
+        status_style = "bold green" if s["done"] else (
+            "bold red" if s["error"] else "bold yellow"
+        )
+        status_text = s["status"] or "idle"
+        header_content = self._Text.assemble(
+            ("gemini-py  ", "bold magenta"),
+            ("model=", "dim"),
+            (s.get("model") or "?", "cyan"),
+            ("  iter=", "dim"),
+            (f"{s.get('iteration', 0)}/{s.get('max', 0)}", "bold"),
+            ("  tools=", "dim"),
+            (str(s.get("tool_calls", 0)), "yellow"),
+            ("  status=", "dim"),
+            (status_text, status_style),
+        )
+        return self._Panel(
+            header_content,
+            border_style="magenta",
+            padding=(0, 1),
+        )
+
+    def _render_body(self):
+        # If no events yet, show a placeholder.
+        if not self._body_renderables:
+            return self._Panel(
+                self._Text("(waiting for the model to start…)", style="dim italic"),
+                border_style="dim",
+                padding=(1, 1),
+            )
+        # Use a Group to stack all body renderables.
+        from rich.console import Group
+        return self._Panel(
+            Group(*self._body_renderables),
+            border_style="blue",
+            padding=(0, 1),
+            title="[bold blue]transcript[/]",
+        )
+
+    def _render_footer(self):
+        s = self.state
+        if s["done"]:
+            text = self._Text.assemble(
+                ("● ", "bold green"),
+                ("agent finished — printing final answer to stdout", "dim"),
+            )
+        elif s["error"]:
+            text = self._Text.assemble(
+                ("● ", "bold red"),
+                (f"error: {s['error']}", "red"),
+            )
+        else:
+            text = self._Text.assemble(
+                ("● ", "bold yellow"),
+                ("working…  (Ctrl+C to abort)", "dim"),
+            )
+        return self._Panel(text, border_style="dim", padding=(0, 1))
+
+    # --- Helpers -----------------------------------------------------------
+
+    def _flush_thinking(self) -> None:
+        """End any pending thinking text so the next event starts fresh."""
+        if self._pending_thinking is not None:
+            self._pending_thinking = None
+
+    def _format_args(self, args: Dict[str, Any]) -> str:
+        if not args:
+            return "{}"
+        parts = []
+        for k, v in args.items():
+            v_str = repr(v) if isinstance(v, str) else str(v)
+            if len(v_str) > 80:
+                v_str = v_str[:77] + "…"
+            parts.append(f"{k}={v_str}")
+        return "{" + ", ".join(parts) + "}"
+
+    def _guess_lexer(self, path: str) -> str:
+        # Reuse the same lexer table as LiveView.
+        return LiveView(use_rich=False, stream=sys.stderr)._guess_lexer(path)
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def make_default_live_view(
+    *,
+    enabled: bool,
+    live: bool = True,
+    model: str = "",
+    max_iterations: int = 0,
+) -> Optional[Any]:
+    """Pick the right live view implementation.
+
+    Args:
+        enabled: Master switch. If False, returns None (events get dropped).
+        live: If True (default), try RichLiveChat (full-screen dashboard).
+              Falls back to LiveView if rich is unavailable or stdout isn't
+              a TTY. If False, uses LiveView (plain stderr streaming).
+        model: Model name to show in the dashboard header.
+        max_iterations: Max iterations for the dashboard header.
+
+    Returns:
+        RichLiveChat | LiveView | None
+    """
     if not enabled:
         return None
+    if live:
+        # Try the full-screen dashboard first.
+        try:
+            import rich  # noqa: F401
+            if sys.stdout.isatty():
+                return RichLiveChat(model=model, max_iterations=max_iterations)
+        except Exception:
+            pass
+    # Fallback: plain stderr streaming.
     return LiveView(use_rich=True)

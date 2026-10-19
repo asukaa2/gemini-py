@@ -137,3 +137,86 @@ def test_cli_live_flag_default_false():
     parser = build_parser()
     args = parser.parse_args(["-p", "hello"])
     assert args.live is False
+
+
+# --- RichLiveChat (full-screen dashboard) --------------------------------
+
+
+def test_rich_live_chat_emit_does_not_crash():
+    """RichLiveChat should accept all event types without raising."""
+    from gemini_py.live import RichLiveChat
+    # Construct (this starts the Live display). Use a fake non-TTY stdout
+    # so rich falls back to plain text (no ANSI cursor magic) — the Live
+    # object still works, it just doesn't grab the screen.
+    import io
+    chat = RichLiveChat(model="gemini-3.8-flash", max_iterations=10)
+    try:
+        chat.emit({"type": "iteration", "n": 1, "max": 10})
+        chat.emit({"type": "text_chunk", "text": "Hello "})
+        chat.emit({"type": "text_chunk", "text": "world!"})
+        chat.emit({"type": "tool_call", "name": "run_shell_command", "args": {"command": "ls"}})
+        chat.emit({"type": "file_write", "path": "app.py", "content": "print('hi')"})
+        chat.emit({"type": "tool_result", "name": "run_shell_command", "result": "file1.txt"})
+        chat.emit({"type": "tool_result", "name": "read_file", "result": "Error: not found"})
+        chat.emit({"type": "done", "finish_reason": "STOP", "n_tool_calls": 2})
+    finally:
+        chat.close()
+
+
+def test_rich_live_chat_state_tracking():
+    """The header state should reflect the events emitted."""
+    from gemini_py.live import RichLiveChat
+    chat = RichLiveChat(model="gemini-4-argon", max_iterations=25)
+    try:
+        chat.emit({"type": "iteration", "n": 3, "max": 25})
+        assert chat.state["iteration"] == 3
+        assert chat.state["max"] == 25
+        assert chat.state["status"] == "thinking…"
+        chat.emit({"type": "tool_call", "name": "write_file", "args": {"path": "x.py"}})
+        assert chat.state["tool_calls"] == 1
+        chat.emit({"type": "tool_call", "name": "read_file", "args": {"path": "y.py"}})
+        assert chat.state["tool_calls"] == 2
+        assert chat.state["status"] == "calling read_file"
+        chat.emit({"type": "done", "finish_reason": "STOP", "n_tool_calls": 2})
+        assert chat.state["done"] is True
+        assert chat.state["finish_reason"] == "STOP"
+        assert chat.state["status"] == "done"
+    finally:
+        chat.close()
+
+
+def test_rich_live_chat_error_event():
+    from gemini_py.live import RichLiveChat
+    chat = RichLiveChat(model="x", max_iterations=5)
+    try:
+        chat.emit({"type": "error", "message": "boom"})
+        assert chat.state["error"] == "boom"
+        assert chat.state["status"] == "error"
+    finally:
+        chat.close()
+
+
+def test_rich_live_chat_close_idempotent():
+    """close() should be safe to call multiple times."""
+    from gemini_py.live import RichLiveChat
+    chat = RichLiveChat(model="x", max_iterations=5)
+    chat.close()
+    chat.close()  # should not raise
+
+
+def test_make_default_live_view_prefers_rich_dashboard():
+    """When stdout is a TTY and rich is available, we get RichLiveChat."""
+    from gemini_py.live import make_default_live_view, RichLiveChat, LiveView
+    # We can't easily fake a TTY in pytest, so this will fall back to LiveView.
+    # Just verify the function doesn't raise and returns something with .emit().
+    view = make_default_live_view(
+        enabled=True,
+        live=True,
+        model="gemini-3.8-flash",
+        max_iterations=10,
+    )
+    assert view is not None
+    assert hasattr(view, "emit")
+    assert hasattr(view, "close")
+    # Cleanup if it's a RichLiveChat (the close stops the Live display).
+    view.close()

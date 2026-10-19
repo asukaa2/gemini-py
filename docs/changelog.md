@@ -3,6 +3,35 @@
 All notable changes to `gemini-py` are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.4] — 2026-10-19
+
+### Fixed
+- Live view: `make_default_live_view()` now ALWAYS returns `LiveView`
+  (the simple stderr-streaming version with rich formatting), never
+  `RichLiveChat`. Each event appears EXACTLY ONCE on stderr — no
+  re-renders, no "muncul banyak" repeats.
+
+  The previous default (`RichLiveChat` with `Live` + `Layout` +
+  `screen=True`) didn't work reliably across terminals:
+    - `screen=True` requires alt-screen support; some terminals fall
+      back to writing new lines per refresh (scrolling instead of
+      updating in place)
+    - `screen=False` + growing transcript body causes rich's cursor
+      movement to fail, also producing new lines per refresh
+    - User reported: "MUNCUL NYA BANYAK BANGET, HARUSNYA 1 AJA 1!!!"
+      (appears many many times, should be just 1)
+
+  `LiveView` matches the original gemini-cli behavior: stream events
+  as they happen (one line per event, no in-place dashboard). Rich
+  formatting is preserved (colors, syntax-highlighted code panels for
+  `write_file` calls).
+
+  `RichLiveChat` is still defined in `live.py` for opt-in use, but
+  the factory never returns it.
+
+### Changed
+- Bumped version to 0.6.4.
+
 ## [0.6.3] — 2026-10-19
 
 ### Added

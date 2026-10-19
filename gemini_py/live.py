@@ -660,26 +660,38 @@ def make_default_live_view(
 ) -> Optional[Any]:
     """Pick the right live view implementation.
 
+    We ALWAYS use `LiveView` (the simple stderr-streaming version with
+    rich formatting). It:
+
+      - prints each event exactly ONCE to stderr (no re-renders,
+        no "muncul banyak" repeats)
+      - uses rich for colors + syntax-highlighted code panels
+      - keeps stdout clean for the final answer
+
+    The previous `RichLiveChat` (alt-screen dashboard with `Live` +
+    `Layout`) was abandoned because:
+      - `screen=True` doesn't work reliably across terminals (some
+        fall back to writing new lines per refresh, causing the
+        dashboard to scroll instead of update in place)
+      - `screen=False` + growing transcript body causes cursor
+        movement to fail, also producing new lines per refresh
+      - User reported "MUNCUL NYA BANYAK BANGET, HARUSNYA 1 AJA"
+        (appears many times, should appear just once) — exactly
+        the streaming-re-renders problem
+
+    `LiveView` is simpler, more reliable, and matches the original
+    gemini-cli's behavior (stream events as they happen, no fancy
+    in-place dashboard).
+
     Args:
-        enabled: Master switch. If False, returns None (events get dropped).
-        live: If True (default), try RichLiveChat (full-screen dashboard).
-              Falls back to LiveView if rich is unavailable or stdout isn't
-              a TTY. If False, uses LiveView (plain stderr streaming).
-        model: Model name to show in the dashboard header.
-        max_iterations: Max iterations for the dashboard header.
+        enabled: Master switch. If False, returns None (events dropped).
+        live: Kept for backward-compat (ignored — we always stream).
+        model: Unused (kept for backward-compat).
+        max_iterations: Unused (kept for backward-compat).
 
     Returns:
-        RichLiveChat | LiveView | None
+        LiveView | None
     """
     if not enabled:
         return None
-    if live:
-        # Try the full-screen dashboard first.
-        try:
-            import rich  # noqa: F401
-            if sys.stdout.isatty():
-                return RichLiveChat(model=model, max_iterations=max_iterations)
-        except Exception:
-            pass
-    # Fallback: plain stderr streaming.
     return LiveView(use_rich=True)

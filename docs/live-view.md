@@ -150,25 +150,37 @@ Theme: `monokai` with line numbers and word-wrap.
 
 ## Implementation details
 
-The dashboard is built with:
+The live view is the `LiveView` class in
+[`gemini_py/live.py`](../gemini_py/live.py). It:
 
-- [`rich.live.Live`](https://rich.readthedocs.io/en/stable/live.html)
-  with `refresh_per_second=12` + `screen=True` + `transient=True`.
-- **`screen=True`** enters the terminal's **alt-screen buffer** — the
-  dashboard fills the screen and updates IN PLACE (like vim / less /
-  gemini-cli's TUI). No scrolling, no flicker, no "muncul mulu".
-- **`transient=True`** clears the dashboard when the agent finishes —
-  only the final answer prints to stdout, with no leftover dashboard
-  above it.
-- [`rich.layout.Layout`](https://rich.readthedocs.io/en/stable/layout.html)
-  — three-row column split (header / body / footer).
-- [`rich.panel.Panel`](https://rich.readthedocs.io/en/stable/panel.html)
-  — borders for each panel.
-- [`rich.syntax.Syntax`](https://rich.readthedocs.io/en/stable/syntax.html)
-  — syntax-highlighted code panels for `write_file` calls.
+- Streams each event to **stderr** exactly ONCE (no re-renders, no
+  in-place dashboard).
+- Uses `rich.console.Console` for formatting: colors,
+  [`rich.panel.Panel`](https://rich.readthedocs.io/en/stable/panel.html),
+  and [`rich.syntax.Syntax`](https://rich.readthedocs.io/en/stable/syntax.html)
+  for code highlighting in `write_file` calls.
+- Keeps stdout clean — only the final answer prints to stdout.
 
-The `RichLiveChat` class is in
-[`gemini_py/live.py`](../gemini_py/live.py).
+### Why not a `Live` + `Layout` dashboard?
+
+We previously tried `RichLiveChat` using `rich.live.Live` with
+`screen=True` (alt-screen buffer) and a `Layout` with header / body /
+footer panels. It worked in some terminals but failed in others:
+
+- `screen=True` requires alt-screen support; some terminals fall back
+  to writing new lines per refresh, causing the dashboard to scroll
+  instead of update in place.
+- `screen=False` with a growing transcript body causes rich's cursor
+  movement to fail, also producing new lines per refresh.
+
+The result: "MUNCUL NYA BANYAK BANGET" (appears many many times).
+
+`LiveView` matches the original gemini-cli's behavior: stream events
+as they happen (one line per event, no in-place dashboard). Rich
+formatting is preserved.
+
+`RichLiveChat` is still defined in `live.py` for opt-in use (construct
+it directly), but `make_default_live_view()` never returns it.
 
 ## Fallback (non-TTY / no rich)
 
